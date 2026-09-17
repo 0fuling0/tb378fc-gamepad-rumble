@@ -8,7 +8,7 @@
 
 ```bash
 ./build.sh                 # 自检 + 打包（纯 shell 模块，不需要 SDK/NDK/JDK）
-# 产物：out/tb378fc_gamepad_rumble-v1.2.zip
+# 产物：out/tb378fc_gamepad_rumble-v1.3.zip
 ```
 
 ---
@@ -126,11 +126,14 @@ struct xb1s_ff_report {          /* __packed，sizeof = 9 */
 
 手柄连着时会起 **4 个进程**，没手柄时只留 **1 个看护**：
 
-| 状态 | 进程 | 实测（单核） |
-|---|---|---|
-| 没有手柄 | `service.sh` 看护 ×1 | **0.07%** |
-| 手柄连着（logcat 模式） | 看护 + bridge 主壳 + 循环子壳 + logcat | **0.1%** |
-| 手柄连着（轮询兜底） | 同上 | **~2.4%** |
+| 状态 | 进程 | 实测（单核） | 占整机(8核) |
+|---|---|---|---|
+| 没有手柄 | `service.sh` 看护 ×1 | **0.07%**（本轮又修掉几处 fork，应更低） | 0.009% |
+| 手柄连着（logcat 模式） | 看护 + bridge 主壳 + 循环子壳 + logcat | **0.23%** | 0.029% |
+| 手柄连着（轮询兜底） | 同上 | **~2.4%** | 0.3% |
+
+手柄连着时那 0.23% 的构成（60 秒实测）：看护 60ms / logcat 30ms / 循环子壳 50ms /
+bridge 主壳 0ms。换算下来一小时约 8 秒 CPU。
 
 四个进程各自干什么、能不能省：
 
@@ -151,6 +154,17 @@ struct xb1s_ff_report {          /* __packed，sizeof = 9 */
   约 2ms，不起新进程、不跑 Java），通过才去跑昂贵的 discover → **0.30% → 0.07%**。
   预筛通过不等于一定是手柄（蓝牙键盘/鼠标也有 hidraw），那时照旧走完整 discover，
   只是偶尔多花 40ms。
+* **`fork` 在这个设备上要 3~4ms，热循环里每一次都算数**。实测：`sleep 0` = 3ms、
+  `cat` = 4ms、`/system/bin/log` = 4ms，而 **shell 内建 `read` = 0ms**。两处踩到：
+  * `service.sh` 的 `cfg_raw` 还是老实现 `sed -n ... | tail -1` —— **2 个进程 + 1 个管道**，
+    外面再套 `$( )` 就是 3 次 fork ≈ 12ms，而 `enabled()` 在循环里每轮都调。
+    （bridge.sh 那边早就改成零 fork 的内建版了，注释里还写着"占了静止开销的一大半"，
+    但**忘了同步到 service.sh**。）→ 改成 `cfg_read` 把值放进 `$CFG_VAL`，连子壳都省掉。
+  * 心跳读取 `hb=$(cat "$HB")` → 内建 `read -r hb < "$HB"`。
+  * 看护的巡检节拍 5 秒 → **10 秒**（bridge 挂掉很罕见，晚 10 秒拉起来无所谓；
+    而"被关掉"那条路径根本不靠这里发现 —— `--set` 会直接调 `--apply` 停掉看护）。
+  → 手柄连着时的开销 **0.75% → 0.23% 单核**。
+
 * **熄屏会被误判成「订阅死了」**。bridge 的心跳原来靠「收到 logcat 行」，而订阅的那几个
   低频探针在**熄屏后会全部安静** → 心跳停 300 秒 → 切轮询模式（贵 24 倍），而且原来
   **切过去就回不来**（只在手柄断开时才复位 `force_poll`）。实测 18:22 就是这么切过去的。
@@ -423,14 +437,14 @@ artifact → 建 GitHub Release 并把 zip 附上。
 
 ```bash
 # 1) 先把 module/module.prop 的 version 改成要发的版本
-#    （注意它带 v 前缀：version=v1.2）
+#    （注意它带 v 前缀：version=v1.3）
 # 2) 提交，然后打 tag —— tag 必须和 version 完全一致
-git tag v1.2
-git push origin v1.2
+git tag v1.3
+git push origin v1.3
 ```
 
 > ⚠️ workflow 里有一步专门校验「tag 与 `module.prop` 的 `version` 一致」，不一致会
-> **直接失败**。这是防「tag 是 v1.2、包里却是 v1.1」这种版本错位 —— 发出去就不好回收了。
+> **直接失败**。这是防「tag 是 v1.3、包里却是 v1.2」这种版本错位 —— 发出去就不好回收了。
 
 也可以在 Actions 页面手动 `Run workflow`（tag 留空就用 `module.prop` 里的 `version`）。
 workflow 是幂等的：Release 已存在时只覆盖附件，重跑不会报 `already exists`。

@@ -22,11 +22,34 @@ CFG="$MODDIR/config"
 log() { echo "$(date '+%F %T') [service] $*" >> "$LOG"; }
 
 cfg_on() { case "$1" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
-cfg_raw() { [ -f "$CFG" ] && sed -n "s/^$1=//p" "$CFG" 2>/dev/null | tail -1; }
+# ⚠️ 不要用 `sed -n "s/^$1=//p"` 实现这个函数 —— 那是 **2 个进程 + 1 个管道**，
+# 外面再套一层 $( ) 就是 3 次 fork。实测这个设备上 fork 一次 3~4ms，而 enabled()
+# 在 5 秒循环里每轮都要调，一分钟就是 12 × 12ms ≈ 144ms —— 占了看护开销的大半。
+# 用 shell 内建 read + 参数展开，一次 fork 都没有。
+#
+# cfg_read 把结果放进 $CFG_VAL（而不是用 $( ) 取输出）—— 连那层子壳也省掉。
+CFG_VAL=""
+cfg_read() {
+    local _line
+    CFG_VAL=""
+    if [ -f "$CFG" ]; then
+        while IFS= read -r _line; do
+            case "$_line" in
+                "$1="*) CFG_VAL="${_line#*=}" ;;
+            esac
+        done < "$CFG"
+    fi
+}
+# 保留一个"打印版"给一次性调用用（那些地方用 $( ) 无所谓）
+cfg_raw() {
+    cfg_read "$1"
+    printf '%s' "$CFG_VAL"
+}
 enabled() {
     [ -e "$MODDIR/disable" ] && return 1
     [ -e "$MODDIR/disable-gamerumble" ] && return 1
-    cfg_on "$(cfg_raw FIX_GAMEPAD_RUMBLE)"
+    cfg_read FIX_GAMEPAD_RUMBLE          # 结果进 $CFG_VAL（零 fork）
+    cfg_on "$CFG_VAL"
 }
 
 # ⚠️ 杀 bridge 必须杀**整个进程组**，不能只杀主壳。
@@ -102,7 +125,12 @@ has_hidraw() {
 # 写一条实测 8ms，30 秒一次 ≈ 0.03% 单核，可以忽略。
 HB_TAG="TB378FC_HB"
 ping_hb() {
-    log -t "$HB_TAG" ping >/dev/null 2>&1
+    # ⚠️ 必须写全路径 /system/bin/log —— 本脚本上面定义了一个同名 shell 函数
+    # `log()`（往 gp.log 写行），它会**遮蔽** log 命令：`log -t TAG msg` 会变成
+    # 调那个函数、往 gp.log 写一行 "-t TAG msg"，logcat 里一条都没有。
+    # 实测就是这么踩的：gp.log 里每 30 秒多一行 "[service] -t TB378FC_HB ping"，
+    # 而 logcat 里的探针数是 0 —— 心跳其实一直没被保活，只是屏幕亮着时看不出来。
+    /system/bin/log -t "$HB_TAG" ping >/dev/null 2>&1
 }
 
 # bridge 还活着吗？活着就把 pid 打出来。
@@ -306,20 +334,31 @@ while :; do
         setsid /system/bin/sh "$BRIDGE" >/dev/null 2>&1 </dev/null &
     fi
 
-    # 看护：每 5 秒看一次进程是否还在、心跳是否还新鲜
+    # 看护：每 WATCH_SECS 秒看一次进程是否还在、心跳是否还新鲜
+    #
+    # ⚠️ 这个节拍不能太密。实测这个设备上 fork 一次要 3~4ms，而每轮至少要 fork 一次
+    # （sleep），所以节拍直接决定开销：5 秒一轮时看护烧 0.25% 单核，10 秒一轮降到
+    # 一半左右。放宽到 10 秒是安全的 —— bridge 挂掉是很罕见的事件（真挂了也不过晚
+    # 10 秒拉起来），而"被关掉"那条路径根本不用靠这里发现：bridge.sh --set 会直接调
+    # service.sh --apply 把看护停掉。
+    WATCH_SECS=10
     n=0
     while :; do
-        sleep 5
+        sleep "$WATCH_SECS"
         n=$((n + 1))
-        # 每 6 轮（30 秒）写一条心跳探针 —— bridge 的订阅里有这个 tag，
+        # 每 3 轮（30 秒）写一条心跳探针 —— bridge 的订阅里有这个 tag，
         # 所以只要订阅活着，它的心跳就一直新鲜（熄屏也不会误判）
-        [ $((n % 6)) -eq 0 ] && ping_hb
+        [ $((n % 3)) -eq 0 ] && ping_hb
         enabled || break
         bridge_pid >/dev/null || break              # bridge 自己退了（看 pidfile 和锁）
-        [ "$n" -ge 4320 ] && { log "bridge 已运行 6 小时，强制轮换"; break; }
+        # 6 小时强制轮换（按 WATCH_SECS 折算成轮数）
+        [ "$n" -ge $((21600 / WATCH_SECS)) ] && { log "bridge 已运行 6 小时，强制轮换"; break; }
 
         if [ "$force_poll" != "1" ]; then
-            hb=$(cat "$HB" 2>/dev/null)
+            # ⚠️ 用内建 read，不要 `hb=$(cat "$HB")` —— 实测这个设备上 fork 一次
+            # 要 3~4ms（内建 read 是 0ms），而这段在 5 秒循环里，一分钟 12 次。
+            hb=""
+            [ -f "$HB" ] && read -r hb < "$HB" 2>/dev/null
             read -r _u _ < /proc/uptime
             now=${_u%.*}
             case "$hb" in

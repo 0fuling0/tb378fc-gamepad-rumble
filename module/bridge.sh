@@ -68,21 +68,34 @@ cfg_on() { case "$1" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
 # ⚠️ 不要用 `sed -n "s/^$1=//p"` 实现这个函数 —— 主循环每轮都会调它（判断开关状态），
 # 每轮 spawn 一个 sed 就是 2~5ms CPU，实测占了守护进程静止开销的一大半。
 # 用 shell 内建 read + 参数展开，一次 fork 都没有。
-cfg_raw() {
-    local _line _v=""
+# ⚠️ 不要用 `sed -n "s/^$1=//p"` 实现这个函数 —— 那是 **2 个进程 + 1 个管道**，
+# 外面再套一层 $( ) 就是 3 次 fork。实测这个设备上 fork 一次 3~4ms，而 enabled()
+# 在 5 秒循环里每轮都要调，一分钟就是 12 × 12ms ≈ 144ms —— 占了看护开销的大半。
+# 用 shell 内建 read + 参数展开，一次 fork 都没有。
+#
+# cfg_read 把结果放进 $CFG_VAL（而不是用 $( ) 取输出）—— 连那层子壳也省掉。
+CFG_VAL=""
+cfg_read() {
+    local _line
+    CFG_VAL=""
     if [ -f "$CFG" ]; then
         while IFS= read -r _line; do
             case "$_line" in
-                "$1="*) _v="${_line#*=}" ;;
+                "$1="*) CFG_VAL="${_line#*=}" ;;
             esac
         done < "$CFG"
     fi
-    printf '%s' "$_v"
+}
+# 保留一个"打印版"给一次性调用用（那些地方用 $( ) 无所谓）
+cfg_raw() {
+    cfg_read "$1"
+    printf '%s' "$CFG_VAL"
 }
 enabled() {
     [ -e "$MODDIR/disable" ] && return 1
     [ -e "$MODDIR/disable-gamerumble" ] && return 1
-    cfg_on "$(cfg_raw FIX_GAMEPAD_RUMBLE)"
+    cfg_read FIX_GAMEPAD_RUMBLE          # 结果进 $CFG_VAL（零 fork）
+    cfg_on "$CFG_VAL"
 }
 
 # 存在的 disable-* 标记文件，给 WebUI 用（提示"开关被标记文件盖掉了"）。
