@@ -304,8 +304,12 @@ run_logcat() {
     # 于是启动瞬间会把过去那些震动记录全部重发一次（实测同一秒内发了 10 条）。
     # `-T N` 的语义是"从最近 N 行开始跟"（且不隐含 -d，仍然持续跟随），
     # 所以 -T 1 = 跳过积压、只跟新日志。
+    # 最后一个 tag 是**看护自己写的**心跳探针（service.sh 的 ping_hb，每 30 秒一条）。
+    # 为什么需要它：上面那几个低频探针在**熄屏后会全部安静**，光靠它们会让心跳停住，
+    # 看护就误判成"订阅死了"→ 切轮询模式（贵 24 倍）。实测踩过：熄屏 5 分钟切轮询。
+    # 有了自探针，只要订阅还活着心跳就一直新鲜；订阅真的死了探针也收不到，照样能发现。
     logcat -b all -v brief -T 1 -s InputReader DisplayManager SurfaceFlinger \
-        PowerManagerService BatteryService 2>/dev/null | \
+        PowerManagerService BatteryService TB378FC_HB 2>/dev/null | \
     while IFS= read -r line; do
         [ -e "$MODDIR/disable" ] && break
         touch_hb

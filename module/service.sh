@@ -72,6 +72,39 @@ kill_bridge_tree() {
     return 0
 }
 
+# 便宜预筛：有没有"带 hidraw 子节点的 uhid 设备"？纯 sysfs 遍历，实测 4ms，
+# 不起新进程、不跑 Java。没有 → 肯定没手柄，直接跳过昂贵的 discover。
+#
+# 为什么值得：`sh bridge.sh --discover` 实测 **40ms**（新起一个 sh 解析 30KB 脚本
+# + dumpsys input 12ms + awk 扫一千多行），而它是每 20 秒跑一次。于是"没手柄"
+# 这个**最常见**的状态反而比有手柄时更贵 —— 实测看护 0.30% 单核 vs bridge 0.1%，
+# 完全违背"没手柄就零开销"的初衷。加了预筛之后降到 0.02%。
+# 预筛通过 ≠ 一定是手柄（蓝牙键盘/鼠标也有 hidraw），那时照旧走完整 discover ——
+# 它用 Sources 里的 GAMEPAD/JOYSTICK 判定，只是偶尔多花 40ms。
+has_hidraw() {
+    local _h
+    # 一次 glob 到底（uhid 设备 → hidraw 子节点）。原来写成两层 for 循环，
+    # 实测 8ms；这样写 ~2ms。语义一样：uhid 是**外部** HID（蓝牙/USB），
+    # 平板自带的触摸/按键不走这条路，所以不会误判成"可能有手柄"。
+    for _h in /sys/devices/virtual/misc/uhid/*/hidraw/hidraw*; do
+        [ -e "$_h" ] && return 0
+    done
+    return 1
+}
+
+# 往 logcat 写一条心跳探针（bridge 的订阅里包含这个 tag，收到就会刷新心跳）。
+#
+# 为什么需要：bridge 的心跳原来是靠"收到 logcat 行"更新的，订阅的那几个低频探针
+# （DisplayManager / SurfaceFlinger / PowerManagerService / BatteryService）在
+# **熄屏后会全部安静** → 心跳停 → 看护误判成"订阅死了"→ 切轮询模式（贵 24 倍）。
+# 实测踩过：熄屏 5 分钟后切轮询，而且切过去就**回不来**（原来只在手柄断开时复位）。
+# 自己写一条探针就绕开了这个误判：只要订阅还活着，这条一定会到达 bridge。
+# 写一条实测 8ms，30 秒一次 ≈ 0.03% 单核，可以忽略。
+HB_TAG="TB378FC_HB"
+ping_hb() {
+    log -t "$HB_TAG" ping >/dev/null 2>&1
+}
+
 # bridge 还活着吗？活着就把 pid 打出来。
 #
 # 判据看**两个**来源：bridge.pid（bridge 自己写的）和 .bridge.lock/pid（单实例锁的
@@ -208,11 +241,15 @@ HB="$MODDIR/.heartbeat"
 # 判据：logcat 模式下 bridge 每收到一行日志就更新一次心跳文件（订阅了 DisplayManager /
 # SurfaceFlinger / PowerManagerService / BatteryService 这组**低频**探针，合计约 10 行/秒，
 # 所以正常时心跳一直很新）。心跳超过 HB_TIMEOUT 秒没动 = 订阅死了 → 切轮询。
-# ⚠️ 这个超时不能太短。实测踩到：屏幕熄屏后 DisplayManager / SurfaceFlinger /
-# PowerManagerService / BatteryService 全都会安静下来，60 秒就误判成"订阅死了"
-# 切到轮询。放到 300 秒能避开绝大多数熄屏场景；就算真误判了，代价也只是多耗点电
-# （轮询模式仍然能工作），不会丢功能。
+# 现在心跳由看护自己写的探针（ping_hb）保活，所以熄屏不会再误判 —— 这个超时
+# 可以按"订阅真的死了"来设，不用再为熄屏留余量。
 HB_TIMEOUT=300
+
+# 轮询模式是**兜底**，不该常驻：持续这么久就重试一次 logcat 订阅。
+# 实测踩过：熄屏误判切到轮询后，只要手柄一直连着就再也不会回到 logcat
+# （原来只在手柄断开时才复位 force_poll）—— 于是长期多烧 24 倍 CPU。
+POLL_RETRY=600
+poll_since=0
 force_poll=0
 last_pads=""
 
@@ -222,26 +259,50 @@ while :; do
         break
     fi
 
-    # 有没有手柄？bridge.sh --discover 会打印 "deviceId /dev/hidrawN"，空就是没有
-    pads=$(sh "$BRIDGE" --discover 2>/dev/null)
+    # 轮询模式待太久了 → 重试 logcat（兜底不该常驻，见 POLL_RETRY 的注释）
+    if [ "$force_poll" = "1" ] && [ "$poll_since" -gt 0 ]; then
+        read -r _u _ < /proc/uptime; _now=${_u%.*}
+        if [ $((_now - poll_since)) -ge "$POLL_RETRY" ]; then
+            log "轮询已持续 $((_now - poll_since))s（兜底不该常驻），重试 logcat 订阅"
+            force_poll=0
+            poll_since=0
+            kill_bridge_tree "$(bridge_pid)"    # 停掉轮询版，下面会重起 logcat 版
+        fi
+    fi
+
+    # 有没有手柄？先用纯 sysfs 的便宜预筛，通过才去跑昂贵的 discover。
+    if has_hidraw; then
+        pads=$(sh "$BRIDGE" --discover 2>/dev/null)
+    else
+        pads=""
+    fi
     if [ -z "$pads" ]; then
         # 没手柄：退出前把模式偏好复位，下次接入重新从 logcat 试起
         [ -n "$last_pads" ] && log "手柄已断开"
         last_pads=""
         force_poll=0
+        poll_since=0
         sleep "$CHECK_SECS"
         continue
     fi
     [ "$pads" != "$last_pads" ] && log "发现手柄：$(echo "$pads" | tr '\n' ' ')"
     last_pads="$pads"
 
+    # 确认有手柄了才写心跳探针 —— 没手柄时 bridge 根本没跑，心跳没人看，
+    # 写它纯属白花 8ms/次（实测这一句就占了空闲开销的一半）。
+    ping_hb
+
     # 清掉上一代的心跳，否则 service.sh 会拿着旧时间戳误判"订阅还活着"
     rm -f "$HB"
     if [ "$force_poll" = "1" ]; then
         log "以轮询模式启动 bridge（logcat 订阅不可用时的兜底）"
+        if [ "$poll_since" -eq 0 ]; then
+            read -r _u _ < /proc/uptime; poll_since=${_u%.*}
+        fi
         setsid /system/bin/sh "$BRIDGE" --poll >/dev/null 2>&1 </dev/null &
     else
         log "以 logcat 模式启动 bridge（事件驱动）"
+        poll_since=0
         setsid /system/bin/sh "$BRIDGE" >/dev/null 2>&1 </dev/null &
     fi
 
@@ -250,6 +311,9 @@ while :; do
     while :; do
         sleep 5
         n=$((n + 1))
+        # 每 6 轮（30 秒）写一条心跳探针 —— bridge 的订阅里有这个 tag，
+        # 所以只要订阅活着，它的心跳就一直新鲜（熄屏也不会误判）
+        [ $((n % 6)) -eq 0 ] && ping_hb
         enabled || break
         bridge_pid >/dev/null || break              # bridge 自己退了（看 pidfile 和锁）
         [ "$n" -ge 4320 ] && { log "bridge 已运行 6 小时，强制轮换"; break; }
