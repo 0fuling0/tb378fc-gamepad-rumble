@@ -20,8 +20,13 @@
 /Vibrating: true/       { vib = 1; next }
 /Pattern:/ {
     if (match($0, /duration=[0-9]+/))  dur = substr($0, RSTART + 9, RLENGTH - 9);
-    if (match($0, /0 : [0-9]+/))       l   = substr($0, RSTART + 4, RLENGTH - 4);
-    if (match($0, /1 : [0-9]+/))       r   = substr($0, RSTART + 4, RLENGTH - 4);
+    # ⚠️ 边界要写「前面不是数字」而不是「前面是空格」—— 通道 0 前面是 `[`
+    #    （"channels=[0 : 255"），写成空格会把通道 0 整个漏掉（实测踩过）。
+    #    这样同时能挡住 "10 : 5" 被误当成通道 0。
+    if (match($0, /[^0-9]0 : [0-9]+/)) l   = substr($0, RSTART + 5, RLENGTH - 5);
+    if (match($0, /[^0-9]1 : [0-9]+/)) r   = substr($0, RSTART + 5, RLENGTH - 5);
+    # 单通道（"channels=[0 : 128]"）→ 镜像到右，否则右马达会被静音
+    if (l != "" && r == "")            r   = l;
     next;
 }
 function emit() {

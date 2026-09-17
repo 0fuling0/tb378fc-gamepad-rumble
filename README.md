@@ -8,7 +8,7 @@
 
 ```bash
 ./build.sh                 # 自检 + 打包（纯 shell 模块，不需要 SDK/NDK/JDK）
-# 产物：out/tb378fc_gamepad_rumble-v1.5.zip
+# 产物：out/tb378fc_gamepad_rumble-v1.6.zip
 ```
 
 ---
@@ -121,6 +121,34 @@ struct xb1s_ff_report {          /* __packed，sizeof = 9 */
 [7] = 循环次数
 [8] = 起始延迟(×10ms)
 ```
+
+### 左右幅值不等（两通道）能正常处理吗
+
+能。框架给输入设备的是**两个通道**：
+
+```
+nextStep: sending vibrate deviceId=5, element=[duration=500ms, channels=[0 : 255, 1 : 255]]
+```
+
+模块把通道 0 当左马达、通道 1 当右马达，分别取出来、**分别写进报告的第 [4]/[5] 字节**：
+
+| 左右 | 报告字节 |
+|---|---|
+| 左=255 右=255 | `03 0f 00 00 ff ff <dur> <loop> 00` |
+| 左=255 右=64  | `03 0f 00 00 ff 40 <dur> <loop> 00` |
+| 左=0   右=255 | `03 0f 00 00 00 ff <dur> <loop> 00` |
+
+⚠️ **字节位置是 [4]/[5]，不是 [2]/[3]** —— 描述符里 [2..5] 确实是四个幅值字段（Xbox 系列
+有主马达 + 扳机马达共四个），但**主马达是第 3/4 个字段**，也就是字节 [4]/[5]；[2]/[3]
+（扳机马达）本模块不动，留 0。这条注释以前写错过（写成 [2]/[3] 是左右），已改正。
+
+解析还要扛住三种形态（实测单测 17/17）：
+
+* 两通道 `channels=[0 : 255, 1 : 64]` → 左=255 右=64
+* **单通道 `channels=[0 : 128]` → 左=右=128（镜像）** —— 以前会判成右=0，等于静音右马达
+* 三通道及以上 `channels=[0 : 1, 1 : 2, 2 : 3]` → 取前两个（0/1 是主马达）
+
+体感验证：`tools/asym-feel.sh`（连着手柄跑，依次发 两边 / 只有左 / 只有右 / 左强右弱）。
 
 ### 常驻进程与开销（实测）
 
@@ -488,10 +516,10 @@ artifact → 建 GitHub Release 并把 zip 附上。
 
 ```bash
 # 1) 先把 module/module.prop 的 version 改成要发的版本
-#    （注意它带 v 前缀：version=v1.5）
+#    （注意它带 v 前缀：version=v1.6）
 # 2) 提交，然后打 tag —— tag 必须和 version 完全一致
-git tag v1.5
-git push origin v1.5
+git tag v1.6
+git push origin v1.6
 ```
 
 > ⚠️ workflow 里有一步专门校验「tag 与 `module.prop` 的 `version` 一致」，不一致会
