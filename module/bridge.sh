@@ -134,6 +134,19 @@ send_stop() {
 # 输出 deviceId -> /dev/hidrawN，只保留「有 Vibrator Input Mapper（= 内核给了 FF）
 # 且 SysfsRootPath 下有 hidraw 节点」的设备 —— 也就是真正的手柄。
 # qcom-hv-haptics 这类设备也有 Vibrator Input Mapper，但没有 hidraw，会被自动跳过。
+# 外接 HID 的"拓扑指纹"：uhid 目录名 + hidraw 节点，纯 sysfs，零 fork。
+# 用来判断"要不要重新跑 discover" —— 手柄重连时 uhid 目录名会变（末尾 .0001 → .0002），
+# 所以这个信号足够灵敏；没变就说明 deviceId → hidraw 的映射不可能变。
+# 结果放进 $HID_TOPO（不用 $( )，省掉一层子壳）。
+HID_TOPO=""
+hid_topology() {
+    local _h
+    HID_TOPO=""
+    for _h in /sys/devices/virtual/misc/uhid/*/hidraw/hidraw*; do
+        [ -e "$_h" ] && HID_TOPO="$HID_TOPO ${_h#/sys/devices/virtual/misc/uhid/}"
+    done
+}
+
 discover() {
     # awk 里没法直接 ls，所以分两步：先拿 (deviceId, SysfsRootPath)，再用 shell 解析 hidraw
     #
@@ -278,6 +291,8 @@ run_logcat() {
 
     discover
     log "初始映射: $(tr '\n' ' ' < "$HID_MAP" 2>/dev/null)"
+    hid_topology
+    last_probe="$HID_TOPO"
     hb_t=0
     touch_hb
     # 上一次真正发过震动报告的 deviceId —— 只有它才需要收停止报告。
@@ -285,6 +300,7 @@ run_logcat() {
     # cancel vibrate，那不是"刚才在震、现在停了"，只是它转不成手柄波形而已。
     # 不加这个判断会白发一堆停止报告（实测日志里全是无意义的"停止"）。
     rumbling_id=""
+    last_probe=""
     RESCAN=$(cfg_raw RESCAN_SECONDS); case "$RESCAN" in ''|*[!0-9]*) RESCAN=10 ;; esac
     read -r _u _ < /proc/uptime
     last_disc=${_u%.*}
@@ -292,47 +308,48 @@ run_logcat() {
     # 同时订阅 ActivityManager 当"存活探针"：
     #   InputReader 只在真的震动时才打日志，光靠它无法区分"这段时间没震动"和
     #   "订阅根本是死的"。ActivityManager 一直有输出，它一停就说明订阅断了。
-    # 探针标签：InputReader 只在真震动时才有日志，光靠它无法区分"这段时间没震动"
-    # 和"订阅根本是死的"，所以要搭几个**一直在说话**的标签当活体探针。
+    # 订阅只有两个 tag：真正关心的 InputReader，和看护自己写的心跳探针。
     #
-    # ⚠️ 探针要挑**低频**的。实测各标签的行速率：
-    #     ActivityManager      640 行/秒   ← 一开始用的这个，代价最大
-    #     WindowManager        333
-    #     AlarmManager         123
-    #     DisplayManager       4.0
-    #     SurfaceFlinger       3.7
-    #     PowerManagerService  2.0
-    #     BatteryService       0.7
-    # 用 ActivityManager 时，logcat 要往管道写 640 行/秒、循环跟着醒 640 次/秒 ——
-    # 实测 500 秒里 logcat 吃了 500ms CPU（0.1% 单核）、循环子壳 170ms。
-    # 而单独跑 `logcat -s InputReader` 15 秒是 **0ms** —— 说明 logcat 自己的格式化
-    # 开销可忽略，成本全在"写管道 + 循环读"的 IPC/上下文切换上。
-    # 换成下面这组合计约 10 行/秒，比原来少 64 倍。
+    # 这里原来还挂着 DisplayManager / SurfaceFlinger / PowerManagerService /
+    # BatteryService 四个"低频探针"，作用是在没有震动的时候也一直有日志进来、
+    # 好让心跳不空转。**现在不需要了** —— 看护每 30 秒自己写一条 TB378FC_HB
+    # （service.sh 的 ping_hb），保活效果更好（不依赖"系统碰巧在打日志"，
+    # 熄屏也不会误判），而且省掉了一堆无谓的流量：
+    # 实测屏幕亮着时那 4 个 tag 一直在说话，把循环子壳唤醒到 50~60ms/分，
+    # 占手柄连着时总开销的一半。摘掉之后只剩 2 条探针/分 + 真实震动事件。
     #
-    # 另一个试过但**不可行**的判据：读 logcat 的 /proc/<pid>/io 的 rchar。
-    # 实测它不增长 —— logcat 是用 recvmsg() 读 netlink socket，不经过 vfs_read，
-    # 所以 rchar/syscr 都不计 socket 读取。
-    #
-    # ⚠️ `-T 1` 不能省：不加的话 logcat 会把缓冲区里的**历史日志**先倒一遍，
-    # 于是启动瞬间会把过去那些震动记录全部重发一次（实测同一秒内发了 10 条）。
-    # `-T N` 的语义是"从最近 N 行开始跟"（且不隐含 -d，仍然持续跟随），
-    # 所以 -T 1 = 跳过积压、只跟新日志。
-    # 最后一个 tag 是**看护自己写的**心跳探针（service.sh 的 ping_hb，每 30 秒一条）。
-    # 为什么需要它：上面那几个低频探针在**熄屏后会全部安静**，光靠它们会让心跳停住，
-    # 看护就误判成"订阅死了"→ 切轮询模式（贵 24 倍）。实测踩过：熄屏 5 分钟切轮询。
-    # 有了自探针，只要订阅还活着心跳就一直新鲜；订阅真的死了探针也收不到，照样能发现。
-    logcat -b all -v brief -T 1 -s InputReader DisplayManager SurfaceFlinger \
-        PowerManagerService BatteryService TB378FC_HB 2>/dev/null | \
+    # 历史教训（留着免得有人又加回去）：
+    #   * 一开始用的是 ActivityManager 当探针 —— 实测 640 行/秒，logcat 要往管道
+    #     写 640 行/秒、循环跟着醒 640 次/秒，500 秒里 logcat 吃 500ms CPU、
+    #     循环子壳 170ms。**探针越话多越贵，成本全在"写管道 + 循环读"的 IPC 上。**
+    #     而单独跑 `logcat -s InputReader` 15 秒是 0ms —— logcat 自己的格式化开销
+    #     可以忽略。
+    #   * 试过但**不可行**的判据：读 logcat 的 /proc/<pid>/io 的 rchar。实测它不增长
+    #     —— logcat 是用 recvmsg() 读 netlink socket，不经过 vfs_read，
+    #     所以 rchar/syscr 都不计 socket 读取。
+    #   * ⚠️ `-T 1` 不能省：不加的话 logcat 会把缓冲区里的**历史日志**先倒一遍，
+    #     启动瞬间把过去那些震动记录全部重发一次（实测同一秒内发了 10 条）。
+    #     `-T N` 是"从最近 N 行开始跟"（不隐含 -d，仍然持续跟随），所以 -T 1 =
+    #     跳过积压、只跟新日志。
+    logcat -b all -v brief -T 1 -s InputReader TB378FC_HB 2>/dev/null | \
     while IFS= read -r line; do
         [ -e "$MODDIR/disable" ] && break
         touch_hb
 
-        # 每 RESCAN 秒刷新一次 deviceId -> hidraw（手柄插拔后编号会变）
+        # 每 RESCAN 秒检查一次 deviceId -> hidraw 有没有变（手柄插拔后编号会变）
         read -r _u _ < /proc/uptime
         now=${_u%.*}
         if [ $((now - last_disc)) -ge "$RESCAN" ]; then
-            discover
             last_disc=$now
+            # ⚠️ 先用零 fork 的 sysfs 指纹判断拓扑有没有变（~1ms），没变就**跳过**
+            # 昂贵的 discover（dumpsys input 12ms + awk 扫一千多行）。
+            # 实测这一步原来每 10 秒无条件跑一次，占了循环子壳开销的大头（约 70ms/分）
+            # —— 而同期订阅只收到 2 行日志，所以成本全在这里，跟日志流量无关。
+            hid_topology
+            if [ "$HID_TOPO" != "$last_probe" ]; then
+                last_probe="$HID_TOPO"
+                discover
+            fi
         fi
 
         case "$line" in

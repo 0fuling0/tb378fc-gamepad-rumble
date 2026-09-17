@@ -8,7 +8,7 @@
 
 ```bash
 ./build.sh                 # 自检 + 打包（纯 shell 模块，不需要 SDK/NDK/JDK）
-# 产物：out/tb378fc_gamepad_rumble-v1.3.zip
+# 产物：out/tb378fc_gamepad_rumble-v1.4.zip
 ```
 
 ---
@@ -129,8 +129,11 @@ struct xb1s_ff_report {          /* __packed，sizeof = 9 */
 | 状态 | 进程 | 实测（单核） | 占整机(8核) |
 |---|---|---|---|
 | 没有手柄 | `service.sh` 看护 ×1 | **0.00~0.02%**（两次采样：10ms / 0ms 每 60 秒） | 0.003% |
-| 手柄连着（logcat 模式） | 看护 + bridge 主壳 + 循环子壳 + logcat | **0.23%** | 0.029% |
+| 手柄连着（logcat 模式） | 看护 + bridge 主壳 + 循环子壳 + logcat | **0.10~0.12%**（三次采样：70/60/60ms 每 60 秒） | 0.013% |
 | 手柄连着（轮询兜底） | 同上 | **~2.4%** | 0.3% |
+
+手柄连着时那 0.1% 的构成（60 秒实测）：看护 20ms / logcat 20~40ms / 循环子壳 0~30ms /
+bridge 主壳 0ms。换算下来一小时约 3.6 秒 CPU。
 
 「没有手柄」那档低到**测量不出来**（0~1 个 jiffy），所以「没手柄就零开销」这句话现在是
 真的成立了 —— 最初是 0.30%，比有手柄时还贵。
@@ -167,6 +170,25 @@ bridge 主壳 0ms。换算下来一小时约 8 秒 CPU。
   * 看护的巡检节拍 5 秒 → **10 秒**（bridge 挂掉很罕见，晚 10 秒拉起来无所谓；
     而"被关掉"那条路径根本不靠这里发现 —— `--set` 会直接调 `--apply` 停掉看护）。
   → 手柄连着时的开销 **0.75% → 0.23% 单核**。
+
+* **换哪个 shell 跑，开销差 3~4 倍**。同一份脚本、同一个 10 秒巡检循环：
+  `busybox sh` 跑看护 **20ms**/分，`mksh`（`/system/bin/sh`）跑 **70~80ms**/分。
+  KernelSU 开机路径本来就用它自带的 busybox 起 `service.sh`，但 `--apply`
+  （WebUI 改开关）原来写死了 `/system/bin/sh` —— 于是**改一次开关就换成一个贵 4 倍的
+  看护**，直到下次开机才恢复。→ 统一走 `SH_BIN`（优先 `/data/adb/ksu/bin/busybox sh`，
+  拿不到才退回 mksh），bridge 也一起。实测 busybox ash 跑 bridge 的二进制报告写入
+  一切正常（`转发 -> deviceId=11 ...`）。
+
+* **rescan 是循环里最贵的一步，而它跟日志流量无关**。用 bridge 的订阅串实测 30 秒
+  只收到 **2 行**（全是心跳探针，`InputReader` 一行都没有），但循环子壳仍烧 50~70ms/分
+  —— 钱花在每 10 秒一次的 `discover`（`dumpsys input` 12ms + awk 扫一千多行）上。
+  → 先算一个**零 fork 的 sysfs 拓扑指纹**（uhid 目录名 + hidraw 节点，~1ms），
+  没变就跳过 discover。手柄重连时 uhid 目录名会变（末尾 `.0001` → `.0002`），
+  所以信号够灵敏。循环子壳降到 0~30ms。
+
+* **订阅里那 4 个「低频探针」tag 可以摘掉了**。它们的唯一作用是"没震动时也一直有日志
+  进来，好让心跳不空转"；自探针上线后就不需要了，而且屏幕亮着时它们一直在说话，
+  白白把循环子壳唤醒。现在订阅只有 `InputReader TB378FC_HB` 两个 tag。
 
 * **熄屏会被误判成「订阅死了」**。bridge 的心跳原来靠「收到 logcat 行」，而订阅的那几个
   低频探针在**熄屏后会全部安静** → 心跳停 300 秒 → 切轮询模式（贵 24 倍），而且原来
@@ -440,14 +462,14 @@ artifact → 建 GitHub Release 并把 zip 附上。
 
 ```bash
 # 1) 先把 module/module.prop 的 version 改成要发的版本
-#    （注意它带 v 前缀：version=v1.3）
+#    （注意它带 v 前缀：version=v1.4）
 # 2) 提交，然后打 tag —— tag 必须和 version 完全一致
-git tag v1.3
-git push origin v1.3
+git tag v1.4
+git push origin v1.4
 ```
 
 > ⚠️ workflow 里有一步专门校验「tag 与 `module.prop` 的 `version` 一致」，不一致会
-> **直接失败**。这是防「tag 是 v1.3、包里却是 v1.2」这种版本错位 —— 发出去就不好回收了。
+> **直接失败**。这是防「tag 是 v1.4、包里却是 v1.3」这种版本错位 —— 发出去就不好回收了。
 
 也可以在 Actions 页面手动 `Run workflow`（tag 留空就用 `module.prop` 里的 `version`）。
 workflow 是幂等的：Release 已存在时只覆盖附件，重跑不会报 `already exists`。

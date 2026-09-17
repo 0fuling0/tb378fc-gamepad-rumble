@@ -158,6 +158,15 @@ bridge_pid() {
 # ⚠️ 不能靠扫 /proc 匹配 "service.sh" 来判断 —— `--apply` 那个一次性进程自己的
 # cmdline 里也有 service.sh，会把自己误判成"看护已经在跑"。
 # （uninstall.sh 早就在读这个文件了，但这边一直没写，所以那段其实是死代码。）
+# 用哪个 shell 跑子进程？
+# 实测**同一份脚本 busybox ash 比 mksh 便宜 3~4 倍**（看护 20ms vs 70~80ms 每 60 秒，
+# 都是 10 秒一轮的巡检循环）。KernelSU 在开机路径上本来就用它自带的 busybox 起
+# service.sh，所以这条路径是验证过的；这里只是让 --apply（WebUI 改开关）也走同一条，
+# 否则改一次开关就会换成一个贵 4 倍的看护，直到下次开机才恢复。
+# busybox 拿不到时退回 /system/bin/sh（功能一样，只是贵一点）。
+SH_BIN="/system/bin/sh"
+[ -x /data/adb/ksu/bin/busybox ] && SH_BIN="/data/adb/ksu/bin/busybox sh"
+
 WATCHDOG_PID="$MODDIR/service.pid"
 PIDFILE="$MODDIR/bridge.pid"
 LOCK="$MODDIR/.bridge.lock"
@@ -194,8 +203,9 @@ if [ "${1:-}" = "--apply" ]; then
         if _wp=$(watchdog_pid); then
             log "[apply] 看护已在跑（pid=$_wp），等它下一轮发现手柄"
         else
-            log "[apply] 启动看护"
-            setsid /system/bin/sh "$MODDIR/service.sh" --webui >/dev/null 2>&1 </dev/null &
+            log "[apply] 启动看护（$SH_BIN）"
+            # 注意 $SH_BIN 故意不加引号 —— 它可能是 "/path/busybox sh" 两个词
+            setsid $SH_BIN "$MODDIR/service.sh" --webui >/dev/null 2>&1 </dev/null &
         fi
     else
         # 顺序要紧：**先停看护、再停 bridge**。反过来的话看护可能在中间又起一个
@@ -327,11 +337,11 @@ while :; do
         if [ "$poll_since" -eq 0 ]; then
             read -r _u _ < /proc/uptime; poll_since=${_u%.*}
         fi
-        setsid /system/bin/sh "$BRIDGE" --poll >/dev/null 2>&1 </dev/null &
+        setsid $SH_BIN "$BRIDGE" --poll >/dev/null 2>&1 </dev/null &
     else
         log "以 logcat 模式启动 bridge（事件驱动）"
         poll_since=0
-        setsid /system/bin/sh "$BRIDGE" >/dev/null 2>&1 </dev/null &
+        setsid $SH_BIN "$BRIDGE" >/dev/null 2>&1 </dev/null &
     fi
 
     # 看护：每 WATCH_SECS 秒看一次进程是否还在、心跳是否还新鲜
