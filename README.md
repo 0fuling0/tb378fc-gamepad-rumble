@@ -368,6 +368,10 @@ mapper 没了它就注册不上 → 框架从不给手柄发震动 → 本模块
     ├── feel-test.sh         连发几次震动，方便用身体确认手柄真的在震
     ├── webui-selftest.js    WebUI 自检（DOM 桩跑真页面：渲染 / 交互 / 状态文案）
     ├── webui-preview.py     生成桌面可直接打开的 WebUI 预览页（不用刷模块）
+    ├── diag-pid.sh          pidfile / 进程树诊断（查看护死循环那类问题用）
+    ├── apply-test.sh        开关即时生效 + 快速连拨（复现「每 25 秒重启一次」用）
+    ├── conc-test.sh         并发调用 discover / --json，验证映射不会踩出重复条目
+    ├── ab-forward.sh        A/B 对照：转发到底需不需要（见「为什么两层都要做」）
     └── ab-test.sh           logcat 流式在两种启动方式下是否都能收到行
 ```
 
