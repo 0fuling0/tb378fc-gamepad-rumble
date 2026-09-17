@@ -8,7 +8,7 @@
 
 ```bash
 ./build.sh                 # 自检 + 打包（纯 shell 模块，不需要 SDK/NDK/JDK）
-# 产物：out/tb378fc_gamepad_rumble-v1.1.zip
+# 产物：out/tb378fc_gamepad_rumble-v1.2.zip
 ```
 
 ---
@@ -423,14 +423,14 @@ artifact → 建 GitHub Release 并把 zip 附上。
 
 ```bash
 # 1) 先把 module/module.prop 的 version 改成要发的版本
-#    （注意它带 v 前缀：version=v1.1）
+#    （注意它带 v 前缀：version=v1.2）
 # 2) 提交，然后打 tag —— tag 必须和 version 完全一致
-git tag v1.1
-git push origin v1.1
+git tag v1.2
+git push origin v1.2
 ```
 
 > ⚠️ workflow 里有一步专门校验「tag 与 `module.prop` 的 `version` 一致」，不一致会
-> **直接失败**。这是防「tag 是 v1.1、包里却是 v1.0」这种版本错位 —— 发出去就不好回收了。
+> **直接失败**。这是防「tag 是 v1.2、包里却是 v1.1」这种版本错位 —— 发出去就不好回收了。
 
 也可以在 Actions 页面手动 `Run workflow`（tag 留空就用 `module.prop` 里的 `version`）。
 workflow 是幂等的：Release 已存在时只覆盖附件，重跑不会报 `already exists`。

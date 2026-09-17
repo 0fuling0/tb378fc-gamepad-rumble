@@ -1,6 +1,6 @@
 id=tb378fc_gamepad_rumble
 name=TB378FC 手柄震动修复
-version=v1.1
-versionCode=10100
+version=v1.2
+versionCode=10200
 author=ACLaniakea, fuling
 description=修好联想小新 Pad Pro GT 13 (TB378FC) HyperOS 3 移植包上**蓝牙游戏手柄不震动**的问题。两层原因：①移植包把 Settings.System.vibrate_input_devices 留成未设置（=0），AOSP 的 InputDeviceDelegate 因此不注册输入设备振动器，手柄震动被静默丢弃（连输入法/SystemUI 的触感也一起死）；②本机内核 hid-microsoft 驱动给 Xbox Series（045e:0b13）构造的 FF 输出报告字段顺序与手柄 HID 描述符声明相反（[duration][start_delay][loop_count] vs [duration][loop_count][start_delay]），控制器把报告读成「延迟 2.55 秒、循环 0 次」，永远震不起来。本模块用一个 shell 守护进程跟着内核 InputReader 的震动日志（本机编译时开了 DEBUG_VIBRATOR），把框架的震动意图按**正确格式**重发到手柄的 hidraw 节点。**只做这一件事，不碰系统其它部分。** 开关可在 KernelSU 管理器的 WebUI 里改，也可用模块目录下的 disable-* 标记文件强制关。
