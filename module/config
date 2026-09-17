@@ -1,0 +1,49 @@
+# TB378FC 手柄震动修复 —— 运行配置
+#
+# 本模块只做一件事：让蓝牙游戏手柄的震动真正生效。
+# 开关可在 KernelSU 管理器的 WebUI 里改（推荐），也可以直接编辑本文件。
+#
+# 布尔键的写法：1/true/yes/on = 开，其它（0/false/no/off）= 关。
+# 改完本文件后重启设备生效。
+#
+# 注意：本文件由 bridge.sh 按行解析（**不是 source**），所以值里可以安全地出现
+# 空格、引号、& | \ 等字符，不会被当成 shell 代码执行。
+
+# 让框架把手柄的震动下发下来。
+#   移植包把 Settings.System.vibrate_input_devices 留成未设置（= 0）。AOSP 的
+#   VibratorManagerService 里 InputDeviceDelegate 就是靠这个开关决定要不要把
+#   **输入设备（手柄）的振动器**注册进来：
+#       if (vibrateInputDevices) { 枚举所有输入设备，注册有振动器的 }
+#   关着时 mInputDeviceVibrators 为空，vibrateIfAvailable() 直接返回 false
+#   → 手柄震动被静默丢弃。
+#   症状：dumpsys vibrator_manager 里 vibrateInputDevices=false、Vibrators: 空、
+#   Recent vibrations 全是 IGNORED_UNSUPPORTED（连输入法 / SystemUI 的 TOUCH 触感
+#   也一起死，因为它们的震动也走同一条被丢弃的路径）。
+#   本模块会把它设成 1；关掉本项就不动这个开关。
+FIX_GAMEPAD_RUMBLE=1
+
+# 守护进程的轮询间隔（毫秒）。
+#   它靠轮询 `dumpsys input` 判断手柄当前是否在震、以及幅值/时长。
+#   实测一次 dumpsys input 约 12~19ms，所以：
+#     IDLE_POLL_MS   静止时的间隔 —— 只用来发现"手柄开始震了"，可以慢一点
+#     ACTIVE_POLL_MS 震动中的间隔 —— 要跟上游戏的幅值变化，快一点
+#   把 IDLE_POLL_MS 调大能更省电（代价是震动起始延迟变大）；
+#   调小则更灵敏。两个值都会被钳到最小 100ms / 50ms。
+IDLE_POLL_MS=500
+ACTIVE_POLL_MS=120
+
+# 连续震动时，每隔多少秒强制重发一次报告（毫秒，默认 5000）。
+#   为什么需要：报告里的"循环次数"最多只覆盖到约 20 秒；而游戏可能连续震几分钟，
+#   期间 dumpsys 里的状态一直不变（Vibrating 恒为 true、幅值不变），
+#   靠"状态变化才重发"的逻辑就不会再发 —— 于是震动会中途停掉。
+#   这个刷新保证长时间震动不会断。
+REFRESH_MS=5000
+
+# 没有手柄连着时是否让守护进程退出（默认 1 = 退出，省电）。
+#   置 0 则守护进程一直跑着等手柄接入。
+EXIT_WHEN_NO_PAD=1
+
+# 看护进程检查"有没有手柄接入"的间隔（秒，默认 20）。
+#   没有手柄时守护进程会退出，靠 service.sh 按这个间隔轮询、有手柄了再拉起来。
+#   调小 = 插上手柄后震动生效更快；调大 = 更省电。
+CHECK_SECONDS=20
