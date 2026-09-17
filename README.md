@@ -8,7 +8,7 @@
 
 ```bash
 ./build.sh                 # 自检 + 打包（纯 shell 模块，不需要 SDK/NDK/JDK）
-# 产物：out/tb378fc_gamepad_rumble-v1.0.zip
+# 产物：out/tb378fc_gamepad_rumble-v1.1.zip
 ```
 
 ---
@@ -121,6 +121,34 @@ struct xb1s_ff_report {          /* __packed，sizeof = 9 */
 [7] = 循环次数
 [8] = 起始延迟(×10ms)
 ```
+
+### 为什么两层都要做（实测对照）
+
+只做 ① 是不够的 —— 这点值得写下来，因为它反直觉。实测（`tools/ab-forward.sh`）：
+
+| 模块状态 | 触发方式 | 手柄 |
+|---|---|---|
+| **关**（bridge 已停，相关进程一个不剩） | 框架 `cmd vibrator_manager synced oneshot 3000 255` | **不震** |
+| **开**（bridge 在跑） | 同一条命令 | **震** |
+| —（对照：模块直接写 hidraw） | `bridge.sh --once 255 255 3000` | **震** |
+
+三组里框架侧**都**把手柄震动下发下去了（`logcat -s InputReader` 能看到
+`sending vibrate deviceId=11`）—— 差别只在于模块有没有把那 9 字节按正确格式补发。
+所以 ①（打开框架开关）只是"让框架愿意往下发"，②（补发正确格式的报告）才是
+"让它真的震起来"。**两层缺一不可。**
+
+> ⚠️ 别被这个现象误导：如果发现"关掉开关手柄还能震"，先确认 bridge **进程真的没了**。
+> 早期版本有个 bug 会让停用时删掉 `bridge.pid` 但进程没死，于是看起来像"关掉了还在震"。
+
+### 改开关是即时生效的
+
+`bridge.sh --set` 写完 config 后会顺手调 `service.sh --apply`：启用 → 立刻
+`settings put system vibrate_input_devices 1` + 起看护；停用 → 先停看护、再停 bridge。
+**不用重启设备**（早期版本必须重启，因为 service.sh 只在开机时被拉起一次）。
+
+停用时**不**回滚 `vibrate_input_devices` —— 沿用 uninstall.sh 末尾写明的口径：它是
+Android 的标准设置项，本机是被移植包留成了未设置；留着没有副作用。想还原：
+`settings delete system vibrate_input_devices`。
 
 ### 触发方式：logcat 事件驱动（默认）+ 轮询兜底
 
@@ -355,14 +383,14 @@ artifact → 建 GitHub Release 并把 zip 附上。
 
 ```bash
 # 1) 先把 module/module.prop 的 version 改成要发的版本
-#    （注意它带 v 前缀：version=v1.0）
+#    （注意它带 v 前缀：version=v1.1）
 # 2) 提交，然后打 tag —— tag 必须和 version 完全一致
-git tag v1.0
-git push origin v1.0
+git tag v1.1
+git push origin v1.1
 ```
 
 > ⚠️ workflow 里有一步专门校验「tag 与 `module.prop` 的 `version` 一致」，不一致会
-> **直接失败**。这是防「tag 是 v1.0、包里却是 v0.9」这种版本错位 —— 发出去就不好回收了。
+> **直接失败**。这是防「tag 是 v1.1、包里却是 v1.0」这种版本错位 —— 发出去就不好回收了。
 
 也可以在 Actions 页面手动 `Run workflow`（tag 留空就用 `module.prop` 里的 `version`）。
 workflow 是幂等的：Release 已存在时只覆盖附件，重跑不会报 `already exists`。
