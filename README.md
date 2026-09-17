@@ -8,7 +8,7 @@
 
 ```bash
 ./build.sh                 # 自检 + 打包（纯 shell 模块，不需要 SDK/NDK/JDK）
-# 产物：out/tb378fc_gamepad_rumble-v1.4.zip
+# 产物：out/tb378fc_gamepad_rumble-v1.5.zip
 ```
 
 ---
@@ -488,10 +488,10 @@ artifact → 建 GitHub Release 并把 zip 附上。
 
 ```bash
 # 1) 先把 module/module.prop 的 version 改成要发的版本
-#    （注意它带 v 前缀：version=v1.4）
+#    （注意它带 v 前缀：version=v1.5）
 # 2) 提交，然后打 tag —— tag 必须和 version 完全一致
-git tag v1.4
-git push origin v1.4
+git tag v1.5
+git push origin v1.5
 ```
 
 > ⚠️ workflow 里有一步专门校验「tag 与 `module.prop` 的 `version` 一致」，不一致会
