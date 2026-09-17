@@ -32,7 +32,7 @@ MOD_VER=$(sed -n 's/^version=//p' "$MODULE/module.prop")
 echo "== $MOD_ID $MOD_VER"
 
 # ---------- ① 脚本自检 ----------
-echo "== 脚本自检"
+echo "== 脚本自检（语法 / 未定义函数 / WebUI 渲染与交互）"
 for f in "$MODULE"/*.sh; do
     sh -n "$f" || { echo "语法错误: $f" >&2; exit 1; }
     echo "  ok $(basename "$f")"
@@ -41,6 +41,25 @@ done
 if [ -f "$TOOLS/check-helpers.py" ]; then
     python3 "$TOOLS/check-helpers.py" "$MODULE"/*.sh
 fi
+
+# WebUI 自检：用极简 DOM 桩把 webroot/index.html 的渲染与交互真跑一遍
+# （"拨开关必须只触发一次 --set" 这类约束就在里面断言）。没装 node 就跳过。
+if command -v node >/dev/null 2>&1; then
+    node "$TOOLS/webui-selftest.js" >/dev/null || {
+        echo "WebUI 自检失败，重跑看细节：node tools/webui-selftest.js" >&2
+        exit 1
+    }
+    echo "  webroot/index.html 自检通过"
+else
+    echo "  跳过 WebUI 自检（没找到 node）"
+fi
+
+# 模块必需文件齐不齐 —— 少一个装到设备上就是静默不工作
+for f in module.prop config bridge.sh parse-input.awk service.sh customize.sh \
+         uninstall.sh webroot/index.html; do
+    [ -f "$MODULE/$f" ] || { echo "模块里缺少 $f" >&2; exit 1; }
+done
+echo "  模块必需文件齐全"
 
 # 行尾必须是 LF —— 脚本要 adb push 到设备上跑，CRLF 会让 mksh 直接报
 # "inaccessible or not found" / "syntax error: unexpected '&&'"，看起来像脚本写错了。

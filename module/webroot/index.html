@@ -6,221 +6,343 @@
 <title>TB378FC 手柄震动修复</title>
 <style>
 :root{
-  --bg:#f6f4f9; --surface:#fff; --surface2:#efecf4; --on-surface:#1c1b1f;
-  --on-surface-variant:#49454e; --outline:#cac4d0; --outline-variant:#e7e0ec;
-  --primary:#6750a4; --on-primary:#fff; --primary-container:#e9ddff; --on-primary-container:#22005d;
-  --error:#b3261e; --error-container:#f9dedc; --on-error-container:#410e0b;
-  --tertiary-container:#ffd8e4; --on-tertiary-container:#31111d;
-  --secondary-container:#e8def8; --on-secondary-container:#1d192b;
+  --bg:#f6f6f4; --card:#ffffff; --line:rgba(0,0,0,.10); --line2:rgba(0,0,0,.18);
+  --fg:#1c1c1a; --fg2:#5f5e5a; --fg3:#8a8880;
+  --ok:#0f6e56; --okbg:#e1f5ee;
+  --bad:#a32d2d; --badbg:#fcebeb;
+  --warn:#854f0b; --warnbg:#faeeda;
+  --accent:#185fa5;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
-@media (prefers-color-scheme: dark){
-:root{
-  --bg:#141218; --surface:#1d1b20; --surface2:#2b2930; --on-surface:#e6e0e9;
-  --on-surface-variant:#cac4d0; --outline:#938f99; --outline-variant:#49454e;
-  --primary:#d0bcff; --on-primary:#381e72; --primary-container:#4f378b; --on-primary-container:#eaddff;
-  --error:#f2b8b5; --error-container:#8c1d18; --on-error-container:#f9dedc;
-  --tertiary-container:#633b48; --on-tertiary-container:#ffd8e4;
-  --secondary-container:#4a4458; --on-secondary-container:#e8def8;
-}}
-*{box-sizing:border-box}
-body{margin:0;padding:16px 14px 40px;background:var(--bg);color:var(--on-surface);
-  font:15px/1.55 system-ui,-apple-system,"Noto Sans SC","Microsoft YaHei",sans-serif;
-  -webkit-text-size-adjust:100%}
-h1{font-size:20px;font-weight:600;margin:4px 0 2px}
-.sub{color:var(--on-surface-variant);font-size:13px;margin-bottom:14px}
-.card{background:var(--surface);border:1px solid var(--outline-variant);border-radius:16px;
-  padding:14px;margin-bottom:12px}
-.row{display:flex;align-items:flex-start;gap:12px}
-.grow{flex:1;min-width:0}
-.title{font-weight:600;font-size:15px}
-.desc{color:var(--on-surface-variant);font-size:13px;margin-top:6px;white-space:pre-wrap;word-break:break-word}
-.st{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;padding:4px 10px;border-radius:999px;
-  margin-top:9px;border:1px solid transparent;max-width:100%}
-.st .dot{width:7px;height:7px;border-radius:50%;flex:none;background:currentColor}
-.st.ok{background:var(--primary-container);color:var(--on-primary-container)}
-.st.bad{background:var(--error-container);color:var(--on-error-container)}
-.st.mid{background:transparent;color:var(--on-surface-variant);border-color:var(--outline-variant)}
-.sw{position:relative;flex:none;width:52px;height:32px;border-radius:16px;border:2px solid var(--outline);
-  background:var(--surface2);cursor:pointer;padding:0;transition:background .15s,border-color .15s}
-.sw::after{content:"";position:absolute;top:50%;left:6px;width:16px;height:16px;border-radius:50%;
-  background:var(--outline);transform:translateY(-50%);transition:left .15s,width .15s,height .15s,background .15s}
-.sw[aria-checked="true"]{background:var(--primary);border-color:var(--primary)}
-.sw[aria-checked="true"]::after{left:26px;width:20px;height:20px;background:var(--on-primary)}
-.kv{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;color:var(--on-surface-variant);
-  background:var(--surface2);border-radius:10px;padding:10px;margin-top:10px;white-space:pre-wrap;word-break:break-all}
-.btn{border:1px solid var(--outline);background:var(--surface);color:var(--on-surface);border-radius:999px;
-  padding:9px 16px;font-size:14px;font-family:inherit;cursor:pointer}
-.btn.primary{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
-.btn:disabled{opacity:.5;cursor:default}
-.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.log{margin-top:12px;background:var(--surface2);border-radius:10px;padding:10px;max-height:220px;overflow:auto;
-  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all}
-.log .bad{color:var(--error)} .log .ok{color:var(--primary)} .log .warn{color:var(--on-surface-variant)}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#1b1b19; --card:#242422; --line:rgba(255,255,255,.12); --line2:rgba(255,255,255,.22);
+    --fg:#f0efe9; --fg2:#b4b2a9; --fg3:#888780;
+    --ok:#9fe1cb; --okbg:#085041;
+    --bad:#f7c1c1; --badbg:#501313;
+    --warn:#fac775; --warnbg:#412402;
+    --accent:#85b7eb;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;padding:16px 14px 28px;background:var(--bg);color:var(--fg);
+  font:400 14px/1.6 -apple-system,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif}
+h1{margin:0;font-size:17px;font-weight:500}
+.sub{margin:4px 0 14px;font-size:12px;color:var(--fg2)}
+.row{display:flex;align-items:center;gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:10px}
+.head{display:flex;align-items:flex-start;gap:10px}
+.num{flex:0 0 auto;width:24px;height:24px;border-radius:7px;background:var(--bg);
+  border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:500;color:var(--fg2)}
+.title{flex:1 1 auto;min-width:0}
+.title .n{font-size:15px;font-weight:500;display:block}
+.title .d{font-size:12px;color:var(--fg2);margin-top:2px}
+.desc{margin:10px 0 0;font-size:12.5px;color:var(--fg2)}
+.st{margin-top:10px;display:inline-flex;align-items:center;gap:6px;
+  font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid transparent;max-width:100%}
+.st.ok{color:var(--ok);background:var(--okbg)}
+.st.bad{color:var(--bad);background:var(--badbg)}
+.st.mid{color:var(--warn);background:var(--warnbg)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.sw{flex:0 0 auto;width:48px;height:28px;border-radius:999px;border:1px solid var(--line2);
+  background:var(--bg);position:relative;cursor:pointer;transition:background .15s,border-color .15s;padding:0}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;
+  background:var(--card);border:1px solid var(--line2);transition:transform .15s}
+.sw[aria-checked="true"]{background:var(--okbg);border-color:var(--ok)}
+.sw[aria-checked="true"]::after{transform:translateX(20px);background:var(--ok);border-color:var(--ok)}
+.sw[disabled]{opacity:.45;cursor:default}
+.fixed{font-size:12px;color:var(--ok);background:var(--okbg);padding:3px 9px;border-radius:999px;flex:0 0 auto}
+.btn{border:1px solid var(--line2);background:var(--bg);color:var(--fg);border-radius:9px;
+  padding:7px 12px;font-size:13px;cursor:pointer;font-family:inherit}
+.btn:active{transform:translateY(1px)}
+.btn[disabled]{opacity:.5;cursor:default}
+.btn.primary{color:var(--accent);border-color:var(--accent)}
+.note{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:12px 14px;
+  font-size:12.5px;color:var(--fg2);margin-bottom:10px}
+.note b{color:var(--fg);font-weight:500}
+.bar{display:flex;gap:8px;align-items:center;margin:14px 0 10px;flex-wrap:wrap}
+.card .bar{margin:12px 0 0}
+.mono{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.kv{margin-top:10px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:9px 10px;
+  font-family:var(--mono);font-size:11.5px;color:var(--fg2);white-space:pre-wrap;word-break:break-all}
+.log{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;
+  max-height:230px;overflow:auto;font-family:var(--mono);font-size:11.5px;color:var(--fg2);
+  white-space:pre-wrap;word-break:break-all}
+.log .ok{color:var(--ok)} .log .bad{color:var(--bad)} .log .warn{color:var(--warn)}
+.mark{font-size:12px;color:var(--fg2);margin-bottom:10px}
+.foot{margin-top:14px;font-size:11.5px;color:var(--fg3);text-align:center}
 </style>
 </head>
 <body>
+
 <h1>TB378FC 手柄震动修复</h1>
-<div class="sub" id="ver">读取中…</div>
-<div id="cards"></div>
-<div class="card">
-  <div class="title">手柄与链路</div>
-  <div class="desc" id="padinfo">读取中…</div>
-  <div class="btns">
-    <button class="btn primary" id="test">测试震动（1 秒满幅）</button>
-    <button class="btn" id="refresh">刷新状态</button>
-    <button class="btn" id="status">看详细状态</button>
-  </div>
+<div class="sub" id="ver">正在读取状态…</div>
+
+<div class="note">
+  <b>这个模块只做一件事：让蓝牙手柄真的会震。</b>问题有两层 ——
+  ① 是框架侧那个「输入设备振动」开关被移植包留成了未设置，② 是本机内核给手柄的 FF
+  报告字段顺序与描述符声明相反。② 靠一个轻量守护进程补发，它<b>只在手柄连着的时候才跑</b>
+  （没手柄就是零开销）。改开关需要<b>重启设备</b>才生效。
 </div>
+
+<div id="items"></div>
+
+<div id="s3"></div>
+
+<div class="bar">
+  <button class="btn primary" id="refresh">刷新状态</button>
+  <button class="btn" id="status">查看文本状态</button>
+  <span class="mono" id="busy" style="color:var(--fg3)"></span>
+</div>
+
+<div class="mark" id="markers"></div>
 <div class="log" id="log">就绪。</div>
+<div class="foot">手柄震动修复 · 独立模块 · 不需要 LSPosed · 不改内核</div>
 
 <script>
 "use strict";
 const M = "/data/adb/modules/tb378fc_gamepad_rumble";
 const $ = s => document.querySelector(s);
-let CFG = {}, busy = false;
 
-function logLine(msg, kind){
-  const d = new Date(), p2 = n => String(n).padStart(2,"0");
-  const ts = p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds());
-  const s = document.createElement("span");
-  s.className = kind || "";
-  s.textContent = ts + "  " + msg + "\n";
-  const box = $("#log"); box.appendChild(s); box.scrollTop = box.scrollHeight;
+let CFG = {};
+let busy = false;
+const LOG = [];
+
+function logLine(msg, kind) {
+  const d = new Date();
+  const p2 = n => String(n).padStart(2, "0");
+  const ts = p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+  LOG.push({ ts: ts, msg: String(msg), kind: kind || "" });
+  if (LOG.length > 300) LOG.shift();
+  paintLog();
 }
+function paintLog() {
+  const box = $("#log");
+  box.textContent = "";
+  for (const l of LOG) {
+    const s = document.createElement("span");
+    s.className = l.kind;
+    s.textContent = l.ts + "  " + l.msg + "\n";
+    box.appendChild(s);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
 const q = v => "'" + String(v).replace(/'/g, "'\\''") + "'";
 
-async function run(cmd){
+async function run(cmd) {
   if (!window.ksu || !ksu.exec) throw new Error("KernelSU WebUI API 不可用（请用 KernelSU 管理器打开本页）");
   const r = await ksu.exec(cmd);
   const out = (typeof r === "string") ? r : ((r && (r.stdout || r.result)) || "");
   const err = (r && r.stderr) || "";
   if (err) logLine("stderr: " + err, "warn");
-  return out || "";
+  return { out: out || "", err: err || "" };
 }
 
-async function readCfg(){
-  const out = await run("sh " + q(M + "/bridge.sh") + " --json");
-  const m = /\{[\s\S]*\}/.exec(out);
+async function readCfg() {
+  const r = await run("sh " + q(M + "/bridge.sh") + " --json");
+  const m = /\{[\s\S]*\}/.exec(r.out || "");
   if (!m) throw new Error("读不到状态（--json 没有输出）");
   return JSON.parse(m[0]);
 }
 
+/* ==========================================================================
+   功能模型：① 框架开关，② 补发报告（自动，没有开关）
+   ========================================================================== */
 const ITEMS = [
   {
-    key: "FIX_GAMEPAD_RUMBLE",
-    title: "让框架把手柄震动下发下来",
-    desc: "移植包把 Settings.System.vibrate_input_devices 留成了未设置（=0）。AOSP 的 " +
+    num: "①", key: "FIX_GAMEPAD_RUMBLE", title: "打开「输入设备振动」开关",
+    desc: "移植包把 Settings.System.vibrate_input_devices 留成了未设置（= 0）。AOSP 的 " +
           "VibratorManagerService 里 InputDeviceDelegate 就是靠这个开关决定要不要把「输入设备" +
-          "（手柄）的振动器」注册进来；关着时手柄震动会被静默丢弃 —— 连输入法 / SystemUI 的 " +
-          "触感也一起死（它们的震动走同一条被丢弃的路径）。\n" +
+          "（手柄）的振动器」注册进来；关着时手柄震动被静默丢弃 —— 连输入法 / SystemUI 的触感" +
+          "也一起死（它们走同一条被丢弃的路径）。" +
           "打开后 dumpsys vibrator_manager 里的状态会从 IGNORED_UNSUPPORTED 变成 " +
-          "FORWARDED_TO_INPUT_DEVICES。",
+          "FORWARDED_TO_INPUT_DEVICES。这条路径不经过 vibrator HAL。",
     st: s => String(s.RUMBLE_SETTING) === "1"
-      ? { k:"ok",  t:"已打开（vibrate_input_devices=1）" }
-      : { k:"bad", t:"未打开（vibrate_input_devices=" + (s.RUMBLE_SETTING || "空") + "）—— 手柄震动会被丢弃" }
+      ? { k: "ok",  t: "已打开（vibrate_input_devices=1）" }
+      : { k: "bad", t: "未打开（vibrate_input_devices=" + (s.RUMBLE_SETTING || "空") + "）—— 手柄震动会被丢弃" }
   },
   {
-    key: null,
-    title: "bridge 守护进程",
+    num: "②", key: null, title: "补发手柄 FF 报告",
     desc: "跟着内核 InputReader 的震动日志走（本机编译时开了 DEBUG_VIBRATOR），把框架的震动意图" +
-          "按**正确格式**重发到手柄的 hidraw 节点。\n" +
-          "为什么需要它：本机内核 hid-microsoft 驱动给 Xbox Series（045e:0b13）构造的 FF 输出报告" +
-          "字段顺序与手柄 HID 描述符声明相反（[duration][start_delay][loop_count] vs " +
+          "按正确格式重发到手柄的 hidraw 节点。" +
+          "为什么需要：内核 hid-microsoft 给 Xbox Series（045e:0b13）构造的 FF 输出报告字段顺序" +
+          "与手柄 HID 描述符声明相反（[duration][start_delay][loop_count] vs " +
           "[duration][loop_count][start_delay]），控制器把报告读成「延迟 2.55 秒、循环 0 次」，" +
-          "所以永远震不起来。驱动是内建的、框架侧 EventHub 是 native，两边都改不了 —— 只能自己补发一份。",
-    st: s => s.BRIDGE_RUNNING === 1
-      ? { k:"ok",  t:"运行中" }
-      : { k:"bad", t:"未运行（看下面日志；重启设备或检查 disable 标记）" }
+          "所以永远震不起来。驱动是内建的、框架侧 EventHub 是 native，两边都改不了 —— 只能自己补发。",
+    st: s => {
+      if (String(s.FIX_GAMEPAD_RUMBLE) !== "1") return { k: "mid", t: "已关闭 —— 守护进程不会启动" };
+      if (!s.PAD_COUNT)                       return { k: "mid", t: "等待手柄接入（没有手柄时它不跑，零开销）" };
+      if (s.BRIDGE_RUNNING === 1)             return { k: "ok",  t: "运行中（logcat 事件驱动）" };
+      return { k: "bad", t: "未运行 —— 重启设备，或检查下面的标记文件" };
+    }
   }
 ];
 
-function el(tag, cls, txt){
+function el(tag, cls, txt) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (txt !== undefined && txt !== null) n.textContent = txt;
   return n;
 }
-function pill(st){
-  const p = el("span", "st " + (st.k === "ok" ? "ok" : (st.k === "bad" ? "bad" : "mid")));
+
+function statusPill(st) {
+  const cls = st.k === "ok" ? "ok" : (st.k === "bad" ? "bad" : "mid");
+  const p = el("span", "st " + cls);
   p.appendChild(el("span", "dot"));
   p.appendChild(el("span", null, st.t));
   return p;
 }
-function buildItem(it){
+
+function buildItem(it) {
   const card = el("div", "card");
-  const row = el("div", "row");
-  const g = el("div", "grow");
-  g.appendChild(el("div", "title", it.title));
-  g.appendChild(el("div", "desc", it.desc));
-  g.appendChild(pill(it.st(CFG)));
-  row.appendChild(g);
-  if (it.key){
-    const sw = el("button", "sw");
+  const head = el("div", "head");
+
+  head.appendChild(el("div", "num", it.num));
+
+  const t = el("div", "title");
+  t.appendChild(el("span", "n", it.title));
+  const d = el("div", "d");
+  t.appendChild(d);
+  head.appendChild(t);
+
+  let sw = null;
+  if (it.key) {
+    sw = el("button", "sw");
     sw.type = "button";
     sw.setAttribute("role", "switch");
     sw.setAttribute("aria-checked", CFG[it.key] === 1 ? "true" : "false");
     sw.setAttribute("aria-label", it.title);
-    sw.addEventListener("click", async () => {
-      if (busy) return;
-      busy = true; sw.disabled = true;
-      const want = CFG[it.key] === 1 ? 0 : 1;
-      try {
-        logLine("写入 " + it.key + "=" + want + " …");
-        await run("sh " + q(M + "/bridge.sh") + " --set " + it.key + " " + want);
-        await refresh(true);
-        logLine("已写入（重启设备后由 service.sh 生效）", "ok");
-      } catch(e){ logLine("失败: " + e.message, "bad"); }
-      finally { busy = false; sw.disabled = false; }
-    });
-    row.appendChild(sw);
+    sw.addEventListener("click", () => toggle(it, sw));
+    head.appendChild(sw);
+  } else {
+    // ② 没有开关 —— 有没有手柄、开关开没开，全自动判断，所以用和 ⑭「常开」同样的胶囊
+    head.appendChild(el("span", "fixed", "自动"));
   }
-  card.appendChild(row);
+
+  card.appendChild(head);
+  card.appendChild(el("div", "desc", it.desc));
+
+  const st = it.st(CFG);
+  // 这里写「修复已启用」而不是「开」：开关说的是"要不要做这项修复"，
+  // 不是"被修的那个东西现在是什么状态"（② 尤其容易被读反 —— 它没有开关）。
+  d.textContent = (it.key
+    ? (CFG[it.key] === 1 ? "修复已启用" : "修复已关闭")
+    : "自动运行 · 没有开关") + " · " + st.t;
+  card.appendChild(statusPill(st));
   return card;
 }
-function render(){
-  const box = $("#cards");
-  box.textContent = "";
-  for (const it of ITEMS) box.appendChild(buildItem(it));
-  $("#padinfo").textContent =
-    "识别到的手柄：" + (CFG.PAD_COUNT || 0) + " 个\n" +
-    (CFG.PAD_MAP ? CFG.PAD_MAP : "（没有找到带 FF 且有 hidraw 的设备 —— 手柄没连，或没连上蓝牙）") + "\n" +
-    "映射来自 dumpsys input 的 Input Reader 段：deviceId → SysfsRootPath/hidraw/*";
-  $("#ver").textContent = "版本 " + (CFG.VERSION || "?") + " · " + M;
+
+function buildPad() {
+  const card = el("div", "card");
+  const head = el("div", "head");
+  head.appendChild(el("div", "num", "③"));
+
+  const t = el("div", "title");
+  t.appendChild(el("span", "n", "手柄与链路"));
+  t.appendChild(el("div", "d", "状态查看 · 没有开关 · 可以手动测一次震动"));
+  head.appendChild(t);
+  card.appendChild(head);
+
+  const n = CFG.PAD_COUNT || 0;
+  const map = (CFG.PAD_MAP || "").trim();
+  card.appendChild(el("div", "desc",
+    "映射来自 dumpsys input 的 Input Reader 段：deviceId → SysfsRootPath 下的 hidraw。" +
+    "只认「SysfsRootPath + 有 hidraw + Sources 含 GAMEPAD/JOYSTICK」三条都满足的设备 —— " +
+    "所以蓝牙键盘 / 鼠标 / 触摸屏 / 笔都不会被当成目标。"));
+  card.appendChild(el("div", "kv",
+    (n ? "识别到的手柄：" + n + " 个\n" + map
+       : "识别到的手柄：0 个\n（没有找到带 FF 且有 hidraw 的设备 —— 手柄没连，或没连上蓝牙）")));
+
+  const bar = el("div", "bar");
+  const b = el("button", "btn", "测试震动（1 秒满幅）");
+  b.addEventListener("click", async () => {
+    if (busy) return;
+    setBusy(true, "正在发送测试震动…");
+    try {
+      const r = await run("sh " + q(M + "/bridge.sh") + " --once 255 255 1000");
+      logLine(String(r.out || "").trim() || "已发送（手柄应该震了一下）", "ok");
+    } catch (e) {
+      logLine("失败: " + e.message, "bad");
+    } finally {
+      setBusy(false);
+    }
+  });
+  bar.appendChild(b);
+  card.appendChild(bar);
+  return card;
 }
 
-async function refresh(quiet){
+function setBusy(v, txt) {
+  busy = v;
+  $("#busy").textContent = txt || "";
+  for (const b of document.querySelectorAll("button")) b.disabled = v;
+}
+
+async function toggle(it, sw) {
   if (busy) return;
-  busy = true;
+  const next = CFG[it.key] === 1 ? 0 : 1;
+  setBusy(true, "正在写入 " + it.key + "…");
+  try {
+    const r = await run("sh " + q(M + "/bridge.sh") + " --set " + it.key + " " + next);
+    if (r.err) throw new Error(r.err);
+    CFG[it.key] = next;
+    sw.setAttribute("aria-checked", next === 1 ? "true" : "false");
+    logLine(it.key + " → " + next + "（重启设备后生效）", "ok");
+    render();
+  } catch (e) {
+    logLine("写入失败: " + e.message, "bad");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function render() {
+  const box = $("#items");
+  box.textContent = "";
+  for (const it of ITEMS) box.appendChild(buildItem(it));
+
+  const box3 = $("#s3");
+  box3.textContent = "";
+  box3.appendChild(buildPad());
+
+  const mk = (CFG.MARKERS || "").trim();
+  $("#markers").textContent = mk
+    ? ("存在的标记文件：" + mk + "（优先级高于开关）")
+    : "没有 disable-* 标记文件。";
+  $("#ver").textContent = "版本 " + (CFG.VERSION || "?") + " · 模块目录 " + M;
+}
+
+async function refresh(quiet) {
+  if (busy) return;
+  if (!quiet) setBusy(true, "正在读取状态…");
   try {
     CFG = await readCfg();
     render();
     if (!quiet) logLine("状态已刷新", "ok");
-  } catch(e){
+  } catch (e) {
     logLine("读取失败: " + e.message, "bad");
     $("#ver").textContent = "读取失败：" + e.message;
-  } finally { busy = false; }
+  } finally {
+    if (!quiet) setBusy(false);
+  }
 }
 
 $("#refresh").addEventListener("click", () => refresh(false));
-$("#test").addEventListener("click", async () => {
-  if (busy) return;
-  busy = true;
-  try {
-    logLine("发送 1 秒满幅测试震动…");
-    const out = await run("sh " + q(M + "/bridge.sh") + " --once 255 255 1000");
-    logLine(String(out).trim(), "ok");
-  } catch(e){ logLine("失败: " + e.message, "bad"); }
-  finally { busy = false; }
-});
 $("#status").addEventListener("click", async () => {
   if (busy) return;
-  busy = true;
+  setBusy(true, "正在读取…");
   try {
-    const out = await run("sh " + q(M + "/bridge.sh") + " --status");
-    for (const line of String(out).split("\n")) if (line.trim()) logLine(line);
-  } catch(e){ logLine("失败: " + e.message, "bad"); }
-  finally { busy = false; }
+    const r = await run("sh " + q(M + "/bridge.sh") + " --status");
+    for (const line of String(r.out || "").split("\n")) if (line.trim()) logLine(line);
+  } catch (e) {
+    logLine("失败: " + e.message, "bad");
+  } finally {
+    setBusy(false);
+  }
 });
+
 refresh(true);
 </script>
 </body>

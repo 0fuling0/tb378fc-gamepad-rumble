@@ -315,7 +315,7 @@ mapper 没了它就注册不上 → 框架从不给手柄发震动 → 本模块
 ## 六、目录结构
 
 ```
-├── build.sh                 构建（自检 + 打包，纯 shell 模块）
+├── build.sh                 构建（语法 / 未定义函数 / WebUI 自检 + 打包，纯 shell 模块）
 ├── module/                  KernelSU 模块（zip 根目录就是这里）
 │   ├── module.prop
 │   ├── config               运行配置
@@ -338,6 +338,8 @@ mapper 没了它就注册不上 → 框架从不给手柄发震动 → 本模块
     ├── status.sh            上机状态速查（开关/进程/日志/心跳/识别/配置 一把梭）
     ├── e2e-test.sh          端到端验证：框架下发震动 → 看它发给谁 → 模块有没有转发
     ├── feel-test.sh         连发几次震动，方便用身体确认手柄真的在震
+    ├── webui-selftest.js    WebUI 自检（DOM 桩跑真页面：渲染 / 交互 / 状态文案）
+    ├── webui-preview.py     生成桌面可直接打开的 WebUI 预览页（不用刷模块）
     └── ab-test.sh           logcat 流式在两种启动方式下是否都能收到行
 ```
 
@@ -366,3 +368,56 @@ git push origin v1.0
 workflow 是幂等的：Release 已存在时只覆盖附件，重跑不会报 `already exists`。
 
 纯 shell 模块，**不需要 Android SDK / NDK / JDK**，`build.sh` 几秒出包。
+
+---
+
+## 八、WebUI
+
+### 风格与系统修复 Lite 版保持一致
+
+两边的 WebUI 用的是**同一套设计令牌** —— 15 个 CSS 变量（`--bg` / `--card` / `--line` /
+`--fg` / `--fg2` / `--fg3` / `--ok` / `--bad` / `--warn` / `--accent` / `--mono` …）
+逐字相同，深色模式也同一套；`.card` / `.num` / `.title` / `.desc` / `.st` / `.sw` /
+`.btn` / `.note` / `.bar` / `.log` / `.mark` / `.foot` 这些共用类的声明也逐字相同。
+
+结构也一致：**编号徽标 + 标题 + 副标题 + 状态胶囊**，开关在卡片右上角。
+
+```
+① 打开「输入设备振动」开关      [开关]
+② 补发手柄 FF 报告              [自动]
+③ 手柄与链路                    （映射 + 测试震动按钮）
+```
+
+和 Lite 相比只有两处**故意**的差别（都是修正，不是风格）：
+* `.st` 多了 `max-width:100%` —— 本模块的状态文案更长，不加会溢出卡片
+* `.sw` 多了 `padding:0` —— `<button>` 的默认内边距会把绝对定位的滑块顶偏
+
+### 在桌面上看（不用刷模块）
+
+```bash
+python3 tools/webui-preview.py                  # 手柄模块 → out/webui-preview-rumble.html
+python3 tools/webui-preview.py --target lite    # Lite 模块（对比风格用）
+python3 tools/webui-preview.py --dark           # 强制深色（复用页面自己的深色令牌）
+```
+
+它只往页面里注入一个**假的 `ksu.exec`**（返回一组像真机一样的 JSON），
+**页面本身的 HTML/CSS 一个字都不改** —— 所以看到的就是真机上的样子。
+
+### 自检
+
+```bash
+node tools/webui-selftest.js
+```
+
+用极简 DOM 桩把 `module/webroot/index.html` **真跑一遍**（8 个场景），
+断言的都是踩过坑的约束，比如：
+
+* 拨一次开关**必须只发一条** `--set`（发两条 = 双重写入）
+* 「测试震动」只能走 `--once`，**不能顺带写 config**
+* ② 的状态文案要有判别力：开关关着 → 「不会启动」；没手柄 → 「等待手柄接入」；
+  在跑 → 「运行中」；有手柄却没跑 → 才是「未运行」。
+  （前两种不该报成故障，否则用户会以为坏了）
+* 副标题不能出现裸的「开」/「关」—— Lite 那边真踩过：`停 BPF 监视器  开 · 已停`
+  里的「开」是"这项修复启用了吗"，紧跟在标题后面被读成"监视器：开"。
+
+`build.sh` 会跑它；没装 node 就跳过。

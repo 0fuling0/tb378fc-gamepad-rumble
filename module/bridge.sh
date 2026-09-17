@@ -85,6 +85,16 @@ enabled() {
     cfg_on "$(cfg_raw FIX_GAMEPAD_RUMBLE)"
 }
 
+# 存在的 disable-* 标记文件，给 WebUI 用（提示"开关被标记文件盖掉了"）。
+# 标记的优先级高于 config —— enabled() 里就是先查标记、再查 config。
+markers_list() {
+    local _m _out=""
+    for _m in disable disable-gamerumble; do
+        [ -e "$MODDIR/$_m" ] && _out="$_out $_m"
+    done
+    printf '%s' "$_out"
+}
+
 # ---------------------------------------------------------------- 报告构造
 # 按**手柄描述符声明的顺序**拼 9 字节输出报告（report ID 3）：
 #   [0]=0x03 [1]=使能 0x0F [2..5]=4 个幅值（[2]/[3] 是左/右马达）
@@ -559,8 +569,8 @@ case "$1" in
         # 非法 JSON → WebUI 直接报错。所以先兜底成 0。
         cnt=$(wc -l < "$HID_MAP" 2>/dev/null | tr -d ' ')
         [ -n "$cnt" ] || cnt=0
-        printf '"PAD_COUNT":%s,"PAD_MAP":"%s","VERSION":"%s"}\n' \
-            "$cnt" "$map" "$VERSION"
+        printf '"PAD_COUNT":%s,"PAD_MAP":"%s","VERSION":"%s","MARKERS":"%s"}\n' \
+            "$cnt" "$map" "$VERSION" "$(markers_list)"
         exit 0 ;;
 
     --status)
