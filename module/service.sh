@@ -38,22 +38,127 @@ kill_bridge_tree() {
     [ -n "$p" ] || return 0
     [ -d "/proc/$p" ] || return 0
     tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q "bridge.sh" || return 0
-    kill -9 "-$p" 2>/dev/null      # 负号 = 整个进程组
+    # 负号 = 整个进程组。⚠️ 只有 $p **自己就是组长**（PGID == PID）时才敢这么杀 ——
+    # 否则 `kill -9 -$p` 会把 PGID 恰好等于 $p 的那个**无关进程组**一起干掉。
+    # bridge 是 setsid 起的，正常情况它就是组长；这里只是加一道保险。
+    if [ "$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null)" = "$p" ]; then
+        kill -9 "-$p" 2>/dev/null
+    fi
     kill -9 "$p" 2>/dev/null
-    # 兜底：按 cmdline 再扫一遍（进程组号万一不是 PID）
-    for k in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
-        tr '\0' ' ' < "/proc/$k/cmdline" 2>/dev/null | grep -q "bridge.sh" || continue
+    # 兜底：把残留的 bridge 进程再扫一遍（进程组号万一不是 PID）。
+    # ⚠️ 用一次 `ps` 拿候选，别写成"对每个 pid fork tr+grep" —— 那种写法在 Android 上
+    # 实测要 **7 秒**（一千多个进程 × 两个 fork），而这几秒里新起来的 bridge 会被
+    # 下面的清理误伤（真踩过）。
+    for k in $(ps -A -o PID,ARGS 2>/dev/null | grep "bridge.sh" | awk '{print $1}'); do
+        [ "$k" = "$$" ] && continue
+        _c=$(tr '\0' ' ' < "/proc/$k/cmdline" 2>/dev/null)
+        # 只杀"守护进程"形态的调用；带这些参数的是 WebUI/命令行的一次性调用，别误杀
+        case "$_c" in
+            *--set*|*--apply*|*--json*|*--discover*|*--once*|*--status*) continue ;;
+        esac
         kill -9 "$k" 2>/dev/null
     done
     sleep 1
+    # ⚠️ 只有 pidfile / 锁里**还是我们刚杀掉的那个 pid** 时才清它们。
+    # 原来是无条件 `rm -f "$PIDFILE"`，结果：读 pidfile(旧 pid) → 杀 → 慢扫 7 秒 →
+    # rm —— 这 7 秒里新一代 bridge 已经起来并写好了自己的 pidfile，被这一 rm 删掉，
+    # 看护于是以为 bridge 退了、每 25 秒重启一次，每次又被锁挡住 → 无限循环。
+    _cur=""
+    [ -f "$PIDFILE" ] && read -r _cur < "$PIDFILE" 2>/dev/null
+    [ "$_cur" = "$p" ] && rm -f "$PIDFILE"
+    _cur=""
+    [ -f "$LOCK/pid" ] && read -r _cur < "$LOCK/pid" 2>/dev/null
+    [ "$_cur" = "$p" ] && rm -rf "$LOCK" 2>/dev/null
+    return 0
+}
+
+# bridge 还活着吗？活着就把 pid 打出来。
+#
+# 判据看**两个**来源：bridge.pid（bridge 自己写的）和 .bridge.lock/pid（单实例锁的
+# 持有者）。为什么不能只看 bridge.pid：它只是个便利文件，任何一次清理都可能把它和
+# 实际状态搞不同步 —— 实测就是这么进入"看护每 25 秒重启一次、每次被锁挡住"的死循环，
+# 而 WebUI 同时显示"未运行"。
+#
+# ⚠️ 这个函数在 5 秒循环里跑，只用 shell 内建，一次 fork 都不许有（read 是内建）。
+bridge_pid() {
+    local _f _p=""
+    for _f in "$PIDFILE" "$LOCK/pid"; do
+        [ -f "$_f" ] || continue
+        read -r _p < "$_f" 2>/dev/null
+        [ -n "$_p" ] || continue
+        [ -d "/proc/$_p" ] && { printf '%s' "$_p"; return 0; }
+    done
+    return 1
 }
 
 [ -x "$BRIDGE" ] || chmod 755 "$BRIDGE" 2>/dev/null
+
+# 看护自己的 pid（主循环一开始就写下来）。用来判断"看护在不在跑"。
+# ⚠️ 不能靠扫 /proc 匹配 "service.sh" 来判断 —— `--apply` 那个一次性进程自己的
+# cmdline 里也有 service.sh，会把自己误判成"看护已经在跑"。
+# （uninstall.sh 早就在读这个文件了，但这边一直没写，所以那段其实是死代码。）
+WATCHDOG_PID="$MODDIR/service.pid"
+PIDFILE="$MODDIR/bridge.pid"
+LOCK="$MODDIR/.bridge.lock"
+watchdog_pid() {
+    local _p
+    _p=$(cat "$WATCHDOG_PID" 2>/dev/null)
+    [ -n "$_p" ] || return 1
+    [ -d "/proc/$_p" ] || return 1
+    tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q "service.sh" || return 1
+    printf '%s' "$_p"
+}
+
+# ---------------------------------------------------------------- --apply
+# WebUI 改完开关后调这个，让改动**立刻生效**，不用重启设备。
+#
+# 为什么需要：service.sh 平时只在开机时被 KernelSU 拉起一次。如果开机那一刻开关是
+# 关的，它就直接 exit 0；之后在 WebUI 把开关打开，**没有任何人会再来启动它** ——
+# 表现就是"开关打开了但守护进程没起来，必须再重启一次"（实测就这么绕过一圈）。
+#
+# 注意：停用时**不**回滚 Settings.System.vibrate_input_devices，这是本模块一贯的
+# 口径（见 uninstall.sh 末尾的说明）：它是 Android 的标准设置项，本机是被移植包留成
+# 未设置；留着没有副作用，真要还原是 `settings delete system vibrate_input_devices`。
+if [ "${1:-}" = "--apply" ]; then
+    if enabled; then
+        # ① 框架开关立刻生效（不然要等下次开机）
+        if [ "$(settings get system vibrate_input_devices 2>/dev/null)" != "1" ]; then
+            settings put system vibrate_input_devices 1 2>/dev/null \
+                && log "[apply] 已启用：vibrate_input_devices 已即时设为 1" \
+                || log "[apply] WARN 写 vibrate_input_devices 失败"
+        else
+            log "[apply] 已启用：vibrate_input_devices 已是 1"
+        fi
+        # ② 看护在跑吗？不在就起一个（它自己会在几秒内发现手柄并起 bridge）
+        if _wp=$(watchdog_pid); then
+            log "[apply] 看护已在跑（pid=$_wp），等它下一轮发现手柄"
+        else
+            log "[apply] 启动看护"
+            setsid /system/bin/sh "$MODDIR/service.sh" --webui >/dev/null 2>&1 </dev/null &
+        fi
+    else
+        # 顺序要紧：**先停看护、再停 bridge**。反过来的话看护可能在中间又起一个
+        # bridge，结果就是我们刚杀掉、它又拉起来一个。
+        if _wp=$(watchdog_pid); then
+            kill -9 "$_wp" 2>/dev/null
+            log "[apply] 已关闭：看护已停（pid=$_wp）"
+        fi
+        rm -f "$WATCHDOG_PID"
+        # kill_bridge_tree 自己会在确认死透之后清掉 pidfile / 锁（且只清"是它自己"的
+        # 那一份），所以这里**不要**再补一句无条件 rm —— 那正是死循环的起因。
+        kill_bridge_tree "$(bridge_pid)"
+        log "[apply] 已关闭：bridge 已停（框架开关按惯例保留不动）"
+    fi
+    exit 0
+fi
 
 if ! enabled; then
     log "本模块已被关闭（config / disable 标记），不启动 bridge"
     exit 0
 fi
+
+# 从这一刻起算"看护在跑"（--apply 靠这个文件判断，别等到主循环里才写）
+echo $$ > "$WATCHDOG_PID"
 
 # 等系统服务起来
 i=0
@@ -68,7 +173,10 @@ if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null)" -gt 262144 ]; then
     mv -f "$LOG" "$LOG.1" 2>/dev/null
 fi
 
-log "--- 开机动作开始（$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null | head -1)）---"
+case "${1:-}" in
+    --webui) log "--- 看护启动（由 WebUI 开关触发）---" ;;
+    *)       log "--- 开机动作开始（$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null | head -1)）---" ;;
+esac
 
 # 开机就把开关设上，**不等手柄接入** —— 否则"没手柄时守护进程不启动"会让这个设置
 # 一直不生效（用户先插手柄之前 `settings get` 一直是 null）。
@@ -82,14 +190,11 @@ else
 fi
 
 # 清掉上一代残留的 bridge（KernelSU 不会自动回收 setsid 出来的进程）
-if [ -f "$MODDIR/bridge.pid" ]; then
-    old=$(cat "$MODDIR/bridge.pid" 2>/dev/null)
-    if [ -n "$old" ] && [ -d "/proc/$old" ] && tr '\0' ' ' < "/proc/$old/cmdline" 2>/dev/null | grep -q "bridge.sh"; then
-        kill -9 "$old" 2>/dev/null
-        log "已清掉上一代 bridge pid=$old"
-    fi
-    rm -f "$MODDIR/bridge.pid"
-fi
+# ⚠️ 必须用 kill_bridge_tree（杀**整个进程组**），不能只 `kill -9` 主壳 ——
+# bridge 是 setsid 起的，子进程有 logcat（阻塞在 socket 上）和跑 while read 循环的子壳；
+# 只杀主壳它们会活下来继续转发，于是新旧两份同时工作（手柄收到两份报告）。实测踩过。
+# （kill_bridge_tree 会在确认死透之后自己清掉 pidfile / 锁，这里不用再 rm）
+kill_bridge_tree "$(bridge_pid)"
 
 CHECK_SECS=$(cfg_raw CHECK_SECONDS); case "$CHECK_SECS" in ''|*[!0-9]*) CHECK_SECS=20 ;; esac
 [ "$CHECK_SECS" -lt 5 ] && CHECK_SECS=5
@@ -146,7 +251,7 @@ while :; do
         sleep 5
         n=$((n + 1))
         enabled || break
-        [ -f "$MODDIR/bridge.pid" ] || break        # bridge 自己退了
+        bridge_pid >/dev/null || break              # bridge 自己退了（看 pidfile 和锁）
         [ "$n" -ge 4320 ] && { log "bridge 已运行 6 小时，强制轮换"; break; }
 
         if [ "$force_poll" != "1" ]; then
@@ -158,7 +263,7 @@ while :; do
                 *) if [ $((now - hb)) -gt "$HB_TIMEOUT" ]; then
                        log "logcat 心跳已停 $((now - hb))s（订阅被 logd 拒了），改用轮询模式"
                        force_poll=1
-                       kill_bridge_tree "$(cat "$MODDIR/bridge.pid" 2>/dev/null)"
+                       kill_bridge_tree "$(bridge_pid)"
                        break
                    fi ;;
             esac
@@ -169,4 +274,5 @@ while :; do
     sleep "$CHECK_SECS"
 done
 
+rm -f "$WATCHDOG_PID"
 log "--- 看护结束 ---"

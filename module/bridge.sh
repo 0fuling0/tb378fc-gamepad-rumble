@@ -147,7 +147,9 @@ discover() {
     # 有时不会给手柄重建 VibratorInputMapper（内核侧 FF 还在，/proc/bus/input/devices 的
     # B: FF= 照旧、getevent -pl 也照旧），那时 dumpsys 里就没有这一段 —— 加了会直接
     # 找不到手柄。而它本来也不必要：GAMEPAD + hidraw 已经足够精确。
-    tmp="$MODDIR/.devs"
+    # ⚠️ 临时文件名带 $$：discover 会被**并发**调用（看护每 20 秒、WebUI 的 --json /
+    # --status、bridge 本体），共用一个固定名字会互相覆盖。
+    tmp="$MODDIR/.devs.$$"
     dumpsys input 2>/dev/null | awk '
         /^  Device [0-9]+: / {
             if (dev != "" && root != "" && ispad) print dev " " root;
@@ -159,7 +161,12 @@ discover() {
     END { if (dev != "" && root != "" && ispad) print dev " " root }
     ' > "$tmp" 2>/dev/null
 
-    : > "$HID_MAP"
+    # ⚠️ 写临时文件再 `mv` 原子替换，**不要** `: > "$HID_MAP"` 之后逐行 append ——
+    # discover 会被并发调用，两个实例会各自截断、各自 append，结果映射里出现重复条目
+    # （实测见过 PAD_COUNT=2、同一行出现两次，WebUI 就显示"识别到的手柄：2 个"）。
+    # 用 mv 之后，读的人要么看到旧的、要么看到新的，不会看到半成品。
+    out="$MODDIR/.hidmap.$$"
+    : > "$out"
     while read -r id root; do
         [ -n "$id" ] && [ -n "$root" ] || continue
         # ⚠️ 不能用 `ls "$root"/hidraw/hidraw*` —— hidraw0 是个**目录**，
@@ -175,9 +182,10 @@ discover() {
         [ -n "$node" ] || continue
         [ -c "$node" ] || continue
         # 到这里 = 有 SysfsRootPath + 有 hidraw + Sources 含 GAMEPAD，才认定是手柄
-        printf '%s %s\n' "$id" "$node" >> "$HID_MAP"
+        printf '%s %s\n' "$id" "$node" >> "$out"
     done < "$tmp"
     rm -f "$tmp"
+    mv -f "$out" "$HID_MAP"
     return 0
 }
 
@@ -404,7 +412,10 @@ run_poll() {
 
         read -r _up _ < /proc/uptime
         now=${_up%.*}
-        : > "$HID_MAP"
+        # 同 discover()：写临时文件、循环结束后原子 mv（避免和并发的 --json / 看护
+        # 的 discover 互相踩出重复条目）
+        out="$MODDIR/.hidmap.$$"
+        : > "$out"
         new_all=""
         send_all=""
         any_active=0
@@ -429,7 +440,7 @@ run_poll() {
                 [ -n "$node" ] && [ -c "$node" ] && node_cache="$node_cache $id=$node"
             fi
             [ -n "$node" ] && [ -c "$node" ] || continue
-            printf '%s %s\n' "$id" "$node" >> "$HID_MAP"
+            printf '%s %s\n' "$id" "$node" >> "$out"
             map_txt="$map_txt$id->$node "
 
             [ -n "$l" ] || l=0
@@ -486,6 +497,7 @@ run_poll() {
                 send_all="$send_all$id|0;"
             fi
         done < "$STATE"
+        mv -f "$out" "$HID_MAP"
 
         prev_all="$new_all"
         last_send_all="$send_all"
@@ -547,18 +559,36 @@ case "$1" in
             n=$((n + 1))
             log "config: $k=$v"
         done
-        echo "已写入 $n 项（重启设备后由 service.sh 生效）"
+        # 写完 config 后让改动**立刻生效**，不用重启设备。
+        # service.sh 平时只在开机时被 KernelSU 拉起一次 —— 如果开机那一刻开关是关的，
+        # 它早就 exit 0 了，没人会把守护进程拎起来（实测踩过：WebUI 打开开关后
+        # 什么都没发生，必须再重启一次）。
+        # 放在最后、且失败不中断：config 已经写进去了，重启后照样生效。
+        if [ -x "$MODDIR/service.sh" ] && [ "$n" -gt 0 ]; then
+            sh "$MODDIR/service.sh" --apply >/dev/null 2>&1 \
+                && log "已调用 service.sh --apply（即时生效）" \
+                || log "WARN service.sh --apply 失败（config 已写入，重启后仍会生效）"
+        fi
+        echo "已写入 $n 项，并已即时生效"
         exit 0 ;;
 
     --json)
         # 给 WebUI 用。注意：**不要**在这里做耗时的事（dumpsys input 约 15ms，可以接受）
         b() { if "$@" >/dev/null 2>&1; then printf 1; else printf 0; fi; }
         discover
+        # 运行中？看**两个**来源：bridge.pid 和单实例锁 .bridge.lock/pid。
+        # 只看 pidfile 会误报"未运行" —— 它只是个便利文件，可能被某次清理和实际状态
+        # 搞不同步（实测踩过：WebUI 显示"未运行"，但手柄震动其实是好的）。
         running=0
-        if [ -f "$PIDFILE" ]; then
-            p=$(cat "$PIDFILE" 2>/dev/null)
-            [ -n "$p" ] && [ -d "/proc/$p" ] && grep -q "bridge.sh" "/proc/$p/cmdline" 2>/dev/null && running=1
-        fi
+        for _f in "$PIDFILE" "$LOCK/pid"; do
+            [ -f "$_f" ] || continue
+            p=$(cat "$_f" 2>/dev/null)
+            [ -n "$p" ] || continue
+            [ -d "/proc/$p" ] || continue
+            grep -q "bridge.sh" "/proc/$p/cmdline" 2>/dev/null || continue
+            running=1
+            break
+        done
         map=""
         if [ -s "$HID_MAP" ]; then
             map=$(tr '\n' ' ' < "$HID_MAP" | sed 's/ *$//')

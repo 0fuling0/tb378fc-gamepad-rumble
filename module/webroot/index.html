@@ -83,7 +83,7 @@ h1{margin:0;font-size:17px;font-weight:500}
   <b>这个模块只做一件事：让蓝牙手柄真的会震。</b>问题有两层 ——
   ① 是框架侧那个「输入设备振动」开关被移植包留成了未设置，② 是本机内核给手柄的 FF
   报告字段顺序与描述符声明相反。② 靠一个轻量守护进程补发，它<b>只在手柄连着的时候才跑</b>
-  （没手柄就是零开销）。改开关需要<b>重启设备</b>才生效。
+  （没手柄就是零开销）。改开关<b>即时生效</b>，不用重启设备。
 </div>
 
 <div id="items"></div>
@@ -130,6 +130,7 @@ function paintLog() {
 }
 
 const q = v => "'" + String(v).replace(/'/g, "'\\''") + "'";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function run(cmd) {
   if (!window.ksu || !ksu.exec) throw new Error("KernelSU WebUI API 不可用（请用 KernelSU 管理器打开本页）");
@@ -285,16 +286,26 @@ async function toggle(it, sw) {
   const next = CFG[it.key] === 1 ? 0 : 1;
   setBusy(true, "正在写入 " + it.key + "…");
   try {
+    // bridge.sh --set 写完 config 后会顺手调 service.sh --apply，所以这里是**即时生效**的：
+    // 启用 = 立刻写框架开关 + 起看护；停用 = 立刻停看护 + 停 bridge。不用重启设备。
     const r = await run("sh " + q(M + "/bridge.sh") + " --set " + it.key + " " + next);
     if (r.err) throw new Error(r.err);
     CFG[it.key] = next;
     sw.setAttribute("aria-checked", next === 1 ? "true" : "false");
-    logLine(it.key + " → " + next + "（重启设备后生效）", "ok");
+    logLine(it.key + " → " + next + "（已即时生效）", "ok");
     render();
   } catch (e) {
     logLine("写入失败: " + e.message, "bad");
   } finally {
     setBusy(false);
+  }
+  // 启用时守护进程要几秒才起来（--apply → 看护发现手柄 → 起 bridge），
+  // 立刻重读会看到"未运行"的假警报，所以等一下再读一次真实状态。
+  if (next === 1) {
+    setBusy(true, "等待守护进程起来…");
+    await sleep(2500);
+    setBusy(false);
+    await refresh(true);
   }
 }
 

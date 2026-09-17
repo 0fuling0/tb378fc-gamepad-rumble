@@ -13,6 +13,14 @@ esac
 if [ -f "$MODDIR/bridge.pid" ]; then
     pid=$(cat "$MODDIR/bridge.pid" 2>/dev/null)
     if [ -n "$pid" ] && [ -d "/proc/$pid" ] && grep -q "bridge.sh" "/proc/$pid/cmdline" 2>/dev/null; then
+        # ⚠️ 只 kill 主壳不够：bridge 是 setsid 起的，子进程有 logcat（阻塞在 socket 上，
+        # 父进程死了它不会自己退）和跑 while read 循环的子壳，留着会继续往已经不存在
+        # 的手柄节点写数据。按**进程组**杀才收得干净。
+        # 只有 $pid 自己就是组长（PGID == PID）时才敢按组杀 —— 否则会误伤 PGID 恰好
+        # 等于 $pid 的无关进程组。bridge 正常就是组长。
+        if [ "$(awk '{print $5}' "/proc/$pid/stat" 2>/dev/null)" = "$pid" ]; then
+            kill -9 "-$pid" 2>/dev/null
+        fi
         kill -9 "$pid" 2>/dev/null
     fi
 fi
@@ -31,6 +39,10 @@ fi
 for p in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
     [ -r "/proc/$p/cmdline" ] || continue
     if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q "bridge.sh"; then
+        # 同上：组长才按组杀（这样 logcat 也会被带走）
+        if [ "$(awk '{print $5}' "/proc/$p/stat" 2>/dev/null)" = "$p" ]; then
+            kill -9 "-$p" 2>/dev/null
+        fi
         kill -9 "$p" 2>/dev/null
     fi
 done

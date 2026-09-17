@@ -101,7 +101,7 @@ const ksu = {
     if (cmd.includes('--set')) {
       const m = /--set\s+([A-Za-z_][A-Za-z0-9_]*)\s+(\S+)/.exec(cmd);
       if (m) CFG[m[1]] = Number(m[2]);
-      return '已写入 1 项（重启设备后由 service.sh 生效）';
+      return '已写入 1 项，并已即时生效';
     }
     if (cmd.includes('--once')) return '已发送 1 次：左=255 右=255 时长=1000ms';
     if (cmd.includes('--status')) return 'TB378FC 手柄震动修复  v1.0\n本项开关         : 开';
@@ -175,7 +175,11 @@ function report(n, name, errs, okMsg) {
     expect(errs, /--set\s+FIX_GAMEPAD_RUMBLE\s+0/.test(set[0] || ''), `--set 参数不对：${set[0]}`);
     expect(errs, CFG.FIX_GAMEPAD_RUMBLE === 0, '桩里的 config 应被改成 0');
     expect(errs, switches()[0].getAttribute('aria-checked') === 'false', '拨完后 ① 应显示为关');
-    failed += report(2, '拨 ① 关', errs, '只发一次 --set，且界面跟随');
+    // 现在 --set 会顺手调 service.sh --apply（即时生效），文案不能再叫人去重启
+    const lg = documentStub.querySelector('#log').textContent;
+    expect(errs, /已即时生效/.test(lg), `操作日志应说明已即时生效，实际：${lg.slice(-120)}`);
+    expect(errs, !/重启设备后生效/.test(lg), '不该再提示"重启设备后生效"（现在即时生效了）');
+    failed += report(2, '拨 ① 关', errs, '只发一次 --set、界面跟随、文案说明即时生效');
   }
 
   /* ---- 场景 3：拨 ① 开 → --set FIX_GAMEPAD_RUMBLE 1 ---- */
