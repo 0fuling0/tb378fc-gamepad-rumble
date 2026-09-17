@@ -301,6 +301,10 @@ run_logcat() {
     # 不加这个判断会白发一堆停止报告（实测日志里全是无意义的"停止"）。
     rumbling_id=""
     last_probe=""
+    # 没手柄连着时是否退出（跟轮询模式同一口径，配置键也一样）
+    EXIT_NOPAD=$(cfg_raw EXIT_WHEN_NO_PAD)
+    case "$EXIT_NOPAD" in 0|false|no|off) EXIT_NOPAD=0 ;; *) EXIT_NOPAD=1 ;; esac
+    nopad=0
     RESCAN=$(cfg_raw RESCAN_SECONDS); case "$RESCAN" in ''|*[!0-9]*) RESCAN=10 ;; esac
     read -r _u _ < /proc/uptime
     last_disc=${_u%.*}
@@ -331,10 +335,39 @@ run_logcat() {
     #     启动瞬间把过去那些震动记录全部重发一次（实测同一秒内发了 10 条）。
     #     `-T N` 是"从最近 N 行开始跟"（不隐含 -d，仍然持续跟随），所以 -T 1 =
     #     跳过积压、只跟新日志。
-    logcat -b all -v brief -T 1 -s InputReader TB378FC_HB 2>/dev/null | \
-    while IFS= read -r line; do
+    # ⚠️ read 必须带 -t 超时。原来是无超时的阻塞 read:nopad 检查只在"有一行日志
+    # 到达"时才执行 —— 而手柄断开后恰恰一行都不会再有(没有震动事件;看护的
+    # TB378FC_HB 探针也是"确认有手柄"之后才写的)。实测:没有看护时 bridge 永远
+    # 挂死,60 秒、160 秒都不退出,日志里连一次检查的机会都没有。
+    # 改成 -t $RESCAN 后,超时也会醒来落到循环体 —— nopad/拓扑检查变成**时间驱动**,
+    # 不再依赖日志流量。本机 busybox ash 的 read -t:正常 rc=0;超时 rc=1 但**保留
+    # 旧值**(所以每轮要先清空 line);EOF 也是 rc=0,不能靠返回值区分,只能靠
+    # "line 是否为空"。代价:超时边界上的半行会被丢弃,即极端情况下每 10 秒可能
+    # 丢一条震动事件 —— 游戏震动是连续的,下一行立刻补上,可忽略。
+    #
+    # ⚠️ 不能用 `logcat | while ... done` 管道:主壳退出后 logcat 子进程会变成
+    # 孤儿(没有新日志它就永远阻塞在 socket 上)—— 实测 bridge 退出后进程数降不到
+    # 0,"4 个进程挂着"有一半是它。改用 fifo + 后台 logcat,退出时显式 kill。
+    # `3<>` 以读写方式打开 fifo,打开的一方永远不会阻塞在 open 上。
+    LCF="$MODDIR/.lcpipe"
+    rm -f "$LCF"
+    mkfifo "$LCF" 2>/dev/null
+    logcat -b all -v brief -T 1 -s InputReader TB378FC_HB 2>/dev/null > "$LCF" &
+    LC_PID=$!
+    exec 3<>"$LCF"
+    while :; do
+        line=""
+        IFS= read -t "$RESCAN" -u 3 -r line || line=""
+        if [ -z "$line" ]; then
+            # 超时醒来(或 logcat 已死 —— fd3 被我们自己以读写方式握着一端,不会
+            # EOF,只是永远超时),直接落到下面:nopad / 拓扑检查照常进行。
+            # 这里睡 1 秒防忙转;**不要 touch_hb** —— 订阅死了时心跳必须跟着变旧,
+            # 看护才有机会发现并切轮询。
+            sleep 1
+        else
+            touch_hb
+        fi
         [ -e "$MODDIR/disable" ] && break
-        touch_hb
 
         # 每 RESCAN 秒检查一次 deviceId -> hidraw 有没有变（手柄插拔后编号会变）
         read -r _u _ < /proc/uptime
@@ -349,6 +382,21 @@ run_logcat() {
             if [ "$HID_TOPO" != "$last_probe" ]; then
                 last_probe="$HID_TOPO"
                 discover
+            fi
+
+            # 手柄没了 → 累计空次数，够久就退出，让看护回到「没手柄就什么都不跑」的空闲态。
+            # ⚠️ 这一段原来**只在轮询模式里有**，logcat 模式（默认）完全没有 —— 于是手柄
+            # 一断，bridge 就永久挂着：4 个进程 + 约 0.1% 单核白跑，日志里也没有任何
+            # 「手柄已断开」。实测踩到：手柄断开后 bridge 已空转 8 分钟。
+            # （18:27 那次能正常退出，是因为当时正好掉在轮询模式里。）
+            if [ -s "$HID_MAP" ]; then
+                nopad=0
+            else
+                nopad=$((nopad + 1))
+                if [ "$EXIT_NOPAD" = "1" ] && [ "$nopad" -ge 3 ]; then
+                    log "连续 $nopad 次重扫都没有手柄，退出（等 service.sh 再拉起）"
+                    break
+                fi
             fi
         fi
 
@@ -393,6 +441,9 @@ run_logcat() {
     done
 
     log "bridge 退出（logcat 模式）"
+    exec 3<&-
+    kill "$LC_PID" 2>/dev/null
+    rm -f "$LCF"
     rm -f "$PIDFILE"
     rm -rf "$LOCK" 2>/dev/null
     exit 0
@@ -633,8 +684,10 @@ case "$1" in
         # 非法 JSON → WebUI 直接报错。所以先兜底成 0。
         cnt=$(wc -l < "$HID_MAP" 2>/dev/null | tr -d ' ')
         [ -n "$cnt" ] || cnt=0
-        printf '"PAD_COUNT":%s,"PAD_MAP":"%s","VERSION":"%s","MARKERS":"%s"}\n' \
-            "$cnt" "$map" "$VERSION" "$(markers_list)"
+        cfg_read BRIDGE_MODE
+        case "$CFG_VAL" in auto|logcat|poll) ;; *) CFG_VAL=auto ;; esac
+        printf '"PAD_COUNT":%s,"PAD_MAP":"%s","VERSION":"%s","MARKERS":"%s","BRIDGE_MODE":"%s"}\n' \
+            "$cnt" "$map" "$VERSION" "$(markers_list)" "$CFG_VAL"
         exit 0 ;;
 
     --status)

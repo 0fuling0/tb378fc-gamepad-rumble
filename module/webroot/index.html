@@ -58,6 +58,8 @@ h1{margin:0;font-size:17px;font-weight:500}
 .btn:active{transform:translateY(1px)}
 .btn[disabled]{opacity:.5;cursor:default}
 .btn.primary{color:var(--accent);border-color:var(--accent)}
+.btn.on{color:var(--card);background:var(--accent);border-color:var(--accent)}
+.seg{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 0}
 .note{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:12px 14px;
   font-size:12.5px;color:var(--fg2);margin-bottom:10px}
 .note b{color:var(--fg);font-weight:500}
@@ -175,7 +177,10 @@ const ITEMS = [
     st: s => {
       if (String(s.FIX_GAMEPAD_RUMBLE) !== "1") return { k: "mid", t: "已关闭 —— 守护进程不会启动" };
       if (!s.PAD_COUNT)                       return { k: "mid", t: "等待手柄接入（没有手柄时它不跑，零开销）" };
-      if (s.BRIDGE_RUNNING === 1)             return { k: "ok",  t: "运行中（logcat 事件驱动）" };
+      if (s.BRIDGE_RUNNING === 1) {
+        const m = { auto: "logcat 事件驱动（轮询待命）", logcat: "logcat 事件驱动", poll: "轮询（dumpsys）" };
+        return { k: "ok", t: "运行中 · " + (m[s.BRIDGE_MODE] || s.BRIDGE_MODE) };
+      }
       return { k: "bad", t: "未运行 —— 重启设备，或检查下面的标记文件" };
     }
   }
@@ -235,10 +240,56 @@ function buildItem(it) {
   return card;
 }
 
-function buildPad() {
+function buildMode() {
   const card = el("div", "card");
   const head = el("div", "head");
   head.appendChild(el("div", "num", "③"));
+
+  const t = el("div", "title");
+  t.appendChild(el("span", "n", "工作模式"));
+  t.appendChild(el("div", "d", "logcat 与轮询互为备份 · 同一时刻只有一个在发"));
+  head.appendChild(t);
+  card.appendChild(head);
+
+  card.appendChild(el("div", "desc",
+    "logcat（推荐）：事件驱动，约 0.1% 单核、零延迟；订阅被 logd 拒了时 auto 会自动切到轮询兜底，" +
+    "纯 logcat 则只重启订阅。轮询：约 7% 单核，但不依赖 logd、不依赖内核的 DEBUG_VIBRATOR 编译开关。" +
+    "两个模式同时跑会让手柄收到两份报告，所以「互为备份」= 一个在发、另一个待命。"));
+
+  const seg = el("div", "seg");
+  const modes = [
+    { v: "auto",   t: "auto（推荐）" },
+    { v: "logcat", t: "仅 logcat" },
+    { v: "poll",   t: "仅轮询" }
+  ];
+  const cur = String(CFG.BRIDGE_MODE || "auto");
+  for (const m of modes) {
+    const b = el("button", "btn" + (cur === m.v ? " on" : ""), m.t);
+    b.addEventListener("click", async () => {
+      if (busy || cur === m.v) return;
+      setBusy(true, "切换到 " + m.v + "…");
+      try {
+        const r = await run("sh " + q(M + "/bridge.sh") + " --set BRIDGE_MODE " + m.v);
+        if (r.err) throw new Error(r.err);
+        logLine("BRIDGE_MODE → " + m.v + "（看护已重启，即时生效）", "ok");
+        await sleep(2000);
+        await refresh(true);
+      } catch (e) {
+        logLine("切换失败: " + e.message, "bad");
+      } finally {
+        setBusy(false);
+      }
+    });
+    seg.appendChild(b);
+  }
+  card.appendChild(seg);
+  return card;
+}
+
+function buildPad() {
+  const card = el("div", "card");
+  const head = el("div", "head");
+  head.appendChild(el("div", "num", "④"));
 
   const t = el("div", "title");
   t.appendChild(el("span", "n", "手柄与链路"));
@@ -316,6 +367,7 @@ function render() {
 
   const box3 = $("#s3");
   box3.textContent = "";
+  box3.appendChild(buildMode());
   box3.appendChild(buildPad());
 
   const mk = (CFG.MARKERS || "").trim();

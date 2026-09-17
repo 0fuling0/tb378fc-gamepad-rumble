@@ -199,14 +199,16 @@ if [ "${1:-}" = "--apply" ]; then
         else
             log "[apply] 已启用：vibrate_input_devices 已是 1"
         fi
-        # ② 看护在跑吗？不在就起一个（它自己会在几秒内发现手柄并起 bridge）
+        # ② 看护要**重启**而不是复用：BRIDGE_MODE / CHECK_SECONDS 这些键是看护
+        #    启动时读一次的，WebUI 改完模式必须换个新看护才生效。
         if _wp=$(watchdog_pid); then
-            log "[apply] 看护已在跑（pid=$_wp），等它下一轮发现手柄"
-        else
-            log "[apply] 启动看护（$SH_BIN）"
-            # 注意 $SH_BIN 故意不加引号 —— 它可能是 "/path/busybox sh" 两个词
-            setsid $SH_BIN "$MODDIR/service.sh" --webui >/dev/null 2>&1 </dev/null &
+            log "[apply] 重启看护（pid=$_wp，让新 config 生效）"
+            kill -9 "$_wp" 2>/dev/null
+            rm -f "$WATCHDOG_PID"
         fi
+        log "[apply] 启动看护（$SH_BIN）"
+        # 注意 $SH_BIN 故意不加引号 —— 它可能是 "/path/busybox sh" 两个词
+        setsid $SH_BIN "$MODDIR/service.sh" --webui >/dev/null 2>&1 </dev/null &
     else
         # 顺序要紧：**先停看护、再停 bridge**。反过来的话看护可能在中间又起一个
         # bridge，结果就是我们刚杀掉、它又拉起来一个。
@@ -271,6 +273,21 @@ CHECK_SECS=$(cfg_raw CHECK_SECONDS); case "$CHECK_SECS" in ''|*[!0-9]*) CHECK_SE
 [ "$CHECK_SECS" -lt 5 ] && CHECK_SECS=5
 HB="$MODDIR/.heartbeat"
 
+# 模式开关（config 的 BRIDGE_MODE）：
+#   auto   （默认）两种模式都启用、互为备份 —— logcat 为主（事件驱动，~0.1% 单核），
+#          订阅死了自动切轮询；轮询挂久了（POLL_RETRY）再切回 logcat。
+#          注意"互为备份"不是两个同时跑：两个实例会同时转发，手柄收到两份报告
+#          （实测踩过"每件事都成对出现"），而且轮询常驻要多烧 ~7% 单核。
+#          正确的备份姿势是同一时刻只有一个在发，另一个待命、坏了顶上。
+#   logcat 只用 logcat 模式。订阅死了时看护只负责重启订阅（logd 的读者上限是
+#          动态的，别的读者退出后就又能订阅上了），**不**切轮询。
+#   poll   只用轮询模式。不写心跳探针、不做订阅健康检查 —— 反正不依赖订阅。
+BRIDGE_MODE=$(cfg_raw BRIDGE_MODE)
+case "$BRIDGE_MODE" in
+    auto|logcat|poll) ;;
+    *) BRIDGE_MODE=auto ;;
+esac
+
 # 两种模式：
 #   logcat（默认）—— 事件驱动，阻塞在 socket 上几乎不耗 CPU（实测 ~0.1% 单核），零延迟。
 #                    但 logd 对每个缓冲区有并发读者上限，读者一多会**静默订阅不上**。
@@ -328,12 +345,17 @@ while :; do
 
     # 确认有手柄了才写心跳探针 —— 没手柄时 bridge 根本没跑，心跳没人看，
     # 写它纯属白花 8ms/次（实测这一句就占了空闲开销的一半）。
-    ping_hb
+    # poll-only 模式也不写：心跳探针只服务于 logcat 订阅的健康检查。
+    [ "$BRIDGE_MODE" = "poll" ] || ping_hb
 
     # 清掉上一代的心跳，否则 service.sh 会拿着旧时间戳误判"订阅还活着"
     rm -f "$HB"
-    if [ "$force_poll" = "1" ]; then
-        log "以轮询模式启动 bridge（logcat 订阅不可用时的兜底）"
+    if [ "$BRIDGE_MODE" = "poll" ] || [ "$force_poll" = "1" ]; then
+        if [ "$BRIDGE_MODE" = "poll" ]; then
+            log "以轮询模式启动 bridge（BRIDGE_MODE=poll）"
+        else
+            log "以轮询模式启动 bridge（logcat 订阅不可用时的兜底）"
+        fi
         if [ "$poll_since" -eq 0 ]; then
             read -r _u _ < /proc/uptime; poll_since=${_u%.*}
         fi
@@ -364,7 +386,7 @@ while :; do
         # 6 小时强制轮换（按 WATCH_SECS 折算成轮数）
         [ "$n" -ge $((21600 / WATCH_SECS)) ] && { log "bridge 已运行 6 小时，强制轮换"; break; }
 
-        if [ "$force_poll" != "1" ]; then
+        if [ "$BRIDGE_MODE" != "poll" ] && [ "$force_poll" != "1" ]; then
             # ⚠️ 用内建 read，不要 `hb=$(cat "$HB")` —— 实测这个设备上 fork 一次
             # 要 3~4ms（内建 read 是 0ms），而这段在 5 秒循环里，一分钟 12 次。
             hb=""
@@ -374,8 +396,14 @@ while :; do
             case "$hb" in
                 ''|*[!0-9]*) ;;                     # 还没写出心跳，再等等
                 *) if [ $((now - hb)) -gt "$HB_TIMEOUT" ]; then
-                       log "logcat 心跳已停 $((now - hb))s（订阅被 logd 拒了），改用轮询模式"
-                       force_poll=1
+                       if [ "$BRIDGE_MODE" = "auto" ]; then
+                           log "logcat 心跳已停 $((now - hb))s（订阅被 logd 拒了），改用轮询模式"
+                           force_poll=1
+                       else
+                           # logcat-only：没有轮询可切。logd 的读者上限是动态的
+                           # （别的读者退出后就又能订阅上），重启一次订阅再试。
+                           log "logcat 心跳已停 $((now - hb))s（订阅被 logd 拒了），重启订阅"
+                       fi
                        kill_bridge_tree "$(bridge_pid)"
                        break
                    fi ;;
