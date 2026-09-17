@@ -21,6 +21,7 @@ sh ash busybox toybox mksh env command type time let expr seq basename dirname
 cat cp mv rm rmdir mkdir ln touch chmod chown stat readlink realpath ls find xargs
 grep egrep fgrep sed awk cut tr sort uniq wc head tail tee od xxd hexdump cmp diff
 kill killall pkill pgrep pidof ps id whoami date sleep usleep timeout nohup setsid
+mkfifo mknod
 getprop setprop resetprop start stop dumpsys pm am cmd svc settings input wm screencap
 service logcat getevent sendevent log df du free mount umount mountpoint sync
 insmod rmmod lsmod modprobe dmesg sysctl getenforce setenforce restorecon chcon

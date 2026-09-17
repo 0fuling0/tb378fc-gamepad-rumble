@@ -159,8 +159,8 @@ function report(n, name, errs, okMsg) {
     expect(errs, texts('fixed').join('') === '自动', '② 应显示「自动」胶囊（它没有开关）');
     expect(errs, texts('kv').join('').includes('/dev/hidraw0'), '③ 应显示手柄映射');
     expect(errs, callsMatching(/--json/).length >= 1, '启动时应调用一次 --json');
-    // 三个编号徽标都在
-    expect(errs, texts('num').join('|') === '①|②|③', `编号徽标应为 ①②③，实际 ${texts('num').join('|')}`);
+    // 四个编号徽标都在
+    expect(errs, texts('num').join('|') === '①|②|③|④', `编号徽标应为 ①②③④，实际 ${texts('num').join('|')}`);
     failed += report(1, '初始渲染', errs, '1 开关 + ①② 状态胶囊 + ③ 手柄与链路');
   }
 
