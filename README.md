@@ -340,3 +340,26 @@ mapper 没了它就注册不上 → 框架从不给手柄发震动 → 本模块
 
 > `tools/pack_zip.py` 和 `tools/check-helpers.py` 与 `tb378fc-hyperos-fix-lite` 仓库
 > 里的是同一份（各存一份，保证本仓库自包含）。改动时两边都要同步。
+
+---
+
+## 七、发布
+
+推一个 `v*` 的 tag 就会触发 `.github/workflows/release.yml`：自检 → 打包 → 上传
+artifact → 建 GitHub Release 并把 zip 附上。
+
+```bash
+# 1) 先把 module/module.prop 的 version 改成要发的版本
+#    （注意它带 v 前缀：version=v1.0）
+# 2) 提交，然后打 tag —— tag 必须和 version 完全一致
+git tag v1.0
+git push origin v1.0
+```
+
+> ⚠️ workflow 里有一步专门校验「tag 与 `module.prop` 的 `version` 一致」，不一致会
+> **直接失败**。这是防「tag 是 v1.0、包里却是 v0.9」这种版本错位 —— 发出去就不好回收了。
+
+也可以在 Actions 页面手动 `Run workflow`（tag 留空就用 `module.prop` 里的 `version`）。
+workflow 是幂等的：Release 已存在时只覆盖附件，重跑不会报 `already exists`。
+
+纯 shell 模块，**不需要 Android SDK / NDK / JDK**，`build.sh` 几秒出包。
