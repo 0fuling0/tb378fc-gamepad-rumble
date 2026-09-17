@@ -1,0 +1,157 @@
+name: 构建并发布模块（手柄震动修复）
+
+# 触发方式
+#   1) 推一个 v* 的 tag —— 常规路径（例如 git push origin v1.0）
+#   2) 手动：Actions 页面 → 本 workflow → Run workflow（tag 留空就用 module.prop 里的 version）
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v1.0）。留空则用 module/module.prop 里的 version。'
+        required: false
+        type: string
+
+# 创建 Release 需要 contents: write。
+# 注意：如果这个仓库是 fork，GitHub 文档说派生仓库里「通常无法授予写入权限」。
+# 如果 Release 那一步报 403，就在仓库 Settings → Secrets 里配一个 PAT（名字 RELEASE_TOKEN），
+# workflow 里已经优先用它。
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 自检 + 打包 + 发布
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 读取 module.prop
+        id: mod
+        run: |
+          set -euo pipefail
+          mod_id=$(sed -n 's/^id=//p'      module/module.prop | head -1)
+          mod_ver=$(sed -n 's/^version=//p' module/module.prop | head -1)
+          [ -n "$mod_id" ]  || { echo "::error::module/module.prop 里读不到 id";      exit 1; }
+          [ -n "$mod_ver" ] || { echo "::error::module/module.prop 里读不到 version"; exit 1; }
+          echo "id=$mod_id"       >> "$GITHUB_OUTPUT"
+          echo "version=$mod_ver" >> "$GITHUB_OUTPUT"
+          echo "module.prop → id=$mod_id  version=$mod_ver"
+
+      # 值一律走 env 传入，不在 run: 里直接插 ${{ }} —— 避免 tag 里的特殊字符炸 shell，
+      # 也避免 GitHub 把它判成脚本注入。
+      - name: 决定本次发布的 tag
+        id: rel
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          MOD_VERSION: ${{ steps.mod.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag="$REF_NAME"
+          else
+            tag="$INPUT_TAG"
+            [ -n "$tag" ] || tag="$MOD_VERSION"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "本次发布 tag：$tag"
+
+      # 防「tag 是 v3.6、包里却是 v3.5」这种版本错位 —— 发出去就不好回收了。
+      - name: 校验 tag 与 module.prop 的 version 一致
+        env:
+          RELEASE_TAG: ${{ steps.rel.outputs.tag }}
+          MOD_VERSION: ${{ steps.mod.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_TAG" != "$MOD_VERSION" ]; then
+            echo "::error::tag 是 '$RELEASE_TAG'，但 module/module.prop 里是 '$MOD_VERSION'。先把 module.prop 的 version 改成 '$RELEASE_TAG' 再发 tag，否则 Release 里的包和 tag 对不上。"
+            exit 1
+          fi
+          echo "✓ tag 与 module.prop 一致：$RELEASE_TAG"
+
+      # 纯 shell 模块，不需要 Android SDK / NDK / JDK —— build.sh 就是自检 + 打包 + 产物校验，
+      # 几秒出包。自检含：sh -n 语法、未定义函数（剥掉内嵌 awk）、行尾 LF、
+      # 产物校验（权限位来自 git index / 残留文件 / 版本号）。
+      - name: 脚本自检 + 打包 + 产物校验
+        run: |
+          set -euo pipefail
+          chmod +x build.sh
+          ./build.sh
+
+      - name: 上传 zip（artifact，不进 Release 也能下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.mod.outputs.id }}-${{ steps.mod.outputs.version }}
+          path: out/*.zip
+          if-no-files-found: error
+
+      - name: 创建 GitHub Release 并附上 zip
+        env:
+          # 优先用 RELEASE_TOKEN（PAT）。fork 里的 GITHUB_TOKEN 常常没有写权限，
+          # 配了 RELEASE_TOKEN 就稳了；没配就退回 github.token 试试。
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          RELEASE_TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          zipfile=$(ls out/*.zip | head -1)
+          echo "准备发布：$RELEASE_TAG ← $zipfile"
+
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          KernelSU 模块包（zip 根目录即模块根目录）。
+
+          ## 这个版本做什么
+          修好联想小新 Pad Pro GT 13（TB378FC）HyperOS 3 移植包上**蓝牙游戏手柄不震动**的问题。
+
+          - **① 打开「输入设备振动」开关**：移植包把
+            `Settings.System.vibrate_input_devices` 留成了未设置（= 0）。
+            AOSP 的 `VibratorManagerService` 里 `InputDeviceDelegate` 靠这个开关决定要不要把
+            「输入设备的振动器」注册进来；关着时 `mInputDeviceVibrators` 为空，
+            `vibrateIfAvailable()` 直接返回 `false` → 手柄震动被静默丢弃。
+            → 开机就把这个开关设成 1（不等手柄接入）。
+          - **② 补一份格式正确的 FF 输出报告**：内核 `hid-microsoft` 给 Xbox Series（045e:0b13）
+            构造的报告字段顺序与手柄 HID 描述符声明的不一致（驱动按
+            `[duration][start_delay][loop_count]` 排，描述符声明的是
+            `[Duration][Loop Count][Start Delay]` —— 后两个字节相反），控制器把
+            `... FF 00 FF` 读成「loop=0、delay=2.55 秒」，永远震不起来。
+            驱动是内建的、框架侧 EventHub 是 native，两边都改不了。
+            → 不改内核：抄一遍框架的震动意图，按描述符顺序拼 9 字节写进手柄的 hidraw 节点。
+
+          ## 安装
+          1. 把下面的 zip 丢给 KernelSU 管理器安装（或 `ksud module install`）。
+          2. 重启。
+          3. 连上手柄即可（WebUI 可以看映射和实时状态）。
+
+          ## 依赖与开销
+          - 不需要 LSPosed、不装 APK、不改内核、不动 boot 镜像。
+          - 默认走 logcat 事件驱动模式，实测静止开销 **0.1% 单核（0.01% 整机）**，零延迟。
+          - logd 拒订阅或内核没开 `DEBUG_VIBRATOR` 时自动切轮询兜底（能工作，但更费电）。
+
+          ## 注意
+          - **只认真手柄**：识别要求 `dumpsys input` 的 `Sources:` 含 `GAMEPAD` 或 `JOYSTICK`，
+            且该设备有 hidraw 节点 —— 蓝牙键盘/鼠标/触摸屏/笔都不会被当成目标。
+          - 平板**没有震动马达**，`qcom-hv-haptics` 只是 SoC 的触感控制器，从来不在映射表里。
+          - 本模块 id 是 `tb378fc_gamepad_rumble`，与系统修复模块（`tb378fc_hyperos_fix_lite`）
+            **互不依赖、可共存**。
+
+          详细说明见仓库 README.md。
+          NOTES
+
+          # 幂等：Release 已存在就只补传/覆盖附件，避免重跑时报「already exists」。
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG 已存在，覆盖附件"
+            gh release upload "$RELEASE_TAG" "$zipfile" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$zipfile" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,url \
+            --template '✓ 已发布：{{.tagName}}  {{.url}}{{"\n"}}'
